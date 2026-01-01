@@ -79,13 +79,26 @@ def main():
     tl_manager = TrafficLightManager(client, traffic_light_config, waypoints)
     
     # Spawn Ego Vehicle
-    ego_spawn_index = 400
-    if len(waypoint_transforms) > 400:
-        ego_spawn = waypoint_transforms[ego_spawn_index]
-    else:
-        ego_spawn = waypoint_transforms[0]
+    # Calculate required distance for followers: 7 followers * 7.5m spacing + buffer
+    num_followers = 7
+    spacing = 7.5
+    required_distance = num_followers * spacing
+    
+    # Estimate waypoint index (assuming 0.3m spacing from route gen)
+    # We can also search waypoints for distance > required_distance
+    ego_spawn_index = 0
+    for i, wp in enumerate(waypoint_transforms):
+        if wp.location.x >= required_distance:
+            ego_spawn_index = i
+            break
+            
+    if ego_spawn_index >= len(waypoint_transforms):
+        ego_spawn_index = len(waypoint_transforms) - 1
+        print("Warning: Route too short for full platoon spacing from 0")
+
+    ego_spawn = waypoint_transforms[ego_spawn_index]
     ego_vehicle = world.spawn_actor('vehicle.mustang', ego_spawn)
-    print(f"Spawned Ego Vehicle with ID: {ego_vehicle.id}")
+    print(f"Spawned Ego Vehicle with ID: {ego_vehicle.id} at Index: {ego_spawn_index} (x={ego_spawn.location.x:.2f}m)")
     
     # Set scenario and agent based on mode (matching EcoLead)
     if mode == 'MPC':
@@ -108,7 +121,8 @@ def main():
         behaviour=behavior,
         ego_vehicle=ego_vehicle,
         traffic_light_manager=tl_manager,
-        num_behind=7  # 7 followers (match EcoLead)
+        num_behind=7,  # 7 followers (match EcoLead)
+        ego_spawn_index=ego_spawn_index 
     )
     
     # Visualization

@@ -6,7 +6,7 @@ from .platoon_manager import PlatoonManager
 from ..agents.behavior_agent import BehaviorAgent
 
 class VehicleTrafficManager:
-    def __init__(self, client, world, waypoints, scenario, behaviour, ego_vehicle, traffic_light_manager, num_behind, num_vehicles=20, spacing=7.5, front_vehicle_autopilot=False):
+    def __init__(self, client, world, waypoints, scenario, behaviour, ego_vehicle, traffic_light_manager, num_behind, ego_spawn_index=0, num_vehicles=20, spacing=7.5, front_vehicle_autopilot=False):
         self.client = client
         self.world = world
         self.num_vehicles = num_vehicles
@@ -28,6 +28,7 @@ class VehicleTrafficManager:
         self.front_vehicle_transform = None
         self.platoon_managers = []  
         self.traffic_light_manager = traffic_light_manager
+        self.ego_spawn_index = ego_spawn_index
         # self.setup_traffic_manager()
         self.start_time = None
 
@@ -102,7 +103,7 @@ class VehicleTrafficManager:
             # We need to know ego index.
             # Assuming ego is at start for now, we will fix main.py next.
             # If we fix main.py to spawn at index 300:
-            start_index = 400 # ample space
+            start_index = self.ego_spawn_index # ample space
             
             index = start_index - (i+1) * indices_per_spacing
             

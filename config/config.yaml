@@ -1,5 +1,5 @@
 MPCController:
-  N: 50         # Prediction horizon
+  N: 60         # Prediction horizon
   dt: 0.1                # Time step duration (seconds)
   ref_v: 13.88              # Reference velocity (m/s) - ~50 km/h
   a_max: 4.0              # Maximum acceleration (m/s^2)

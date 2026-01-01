@@ -243,7 +243,12 @@ class BehaviorAgent:
         K1 = K1_min + (K1_max - K1_min) * (1 - np.exp(-abs_gap_error / max_gap))
         K2 = K2_min + (K2_max - K2_min) * (1 - np.exp(-abs_gap_error / max_gap))
         
-        v_target = v_prev + K1 * gap_error + K2 * (v_leader - v_prev)
+        # Safety improvement: Only use leader term if gap is sufficient
+        if gap_error >= 0:
+            v_target = v_prev + K1 * gap_error + K2 * (v_leader - v_prev)
+        else:
+            # Too close: Ignore leader speed, focus on prev vehicle
+            v_target = v_prev + K1 * gap_error
         
         if v_ego < 5:
             Kp, Ki, Kd = 0.35, 0.02, 0.5
