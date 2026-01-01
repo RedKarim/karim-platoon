@@ -9,6 +9,12 @@ class VehicleControl:
         self.hand_brake = hand_brake
         self.reverse = reverse
 
+class BoundingBox:
+    def __init__(self, extent):
+        self.extent = extent # Vector3D (half-size: x=length/2, y=width/2, z=height/2)
+        self.location = Vector3D(0,0,0) # Local offset
+        self.rotation = Rotation(0,0,0)
+
 class Vehicle:
     def __init__(self, vehicle_id, transform, blueprint_id="vehicle.tesla.model3"):
         self.id = vehicle_id
@@ -19,8 +25,13 @@ class Vehicle:
         self.is_alive = True
         
         # Physics Params (Simple Bicycle Model)
+        # Physics Params (Simple Bicycle Model)
         self.wheelbase = 2.8 # meters
         self.max_steer_angle = math.radians(45) # rad
+        
+        # Dimensions (Half-extents)
+        # Default Model 3 ish: 4.7m long, 1.85m wide, 1.4m high
+        self.bounding_box = BoundingBox(Vector3D(2.35, 0.925, 0.7))
 
     def apply_control(self, control):
         self.control = control
