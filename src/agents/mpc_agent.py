@@ -96,6 +96,10 @@ class MPCAgent(object):
         self.prev_a = 0  
         self.vehicle = ego_vehicle
         
+        # Steering smoothing (to reduce noise in kinematic model)
+        self.past_steering = 0.0
+        self.max_steer_change = 0.05  # Max steering change per timestep
+        
         self.ego_model = EgoModel(self.dt)
         self.mpc_controller = MPCController(self.ego_model,mpc_config,weights,fuel_coeffs)
         # Assuming config/route.csv relative to project root
@@ -177,10 +181,21 @@ class MPCAgent(object):
                                                                      -self.mpc_controller.a_max, 
                                                                      should_brake=False)
         
+        # Normalize MPC steering output
         steering_cmd = float(optimal_delta / math.radians(25))
         
+        # Apply steering rate limiting to reduce noise/oscillation
+        if steering_cmd > self.past_steering + self.max_steer_change:
+            steering_cmd = self.past_steering + self.max_steer_change
+        elif steering_cmd < self.past_steering - self.max_steer_change:
+            steering_cmd = self.past_steering - self.max_steer_change
+        
+        # Clip and save for next iteration
+        steering_cmd = np.clip(steering_cmd, -1.0, 1.0)
+        self.past_steering = steering_cmd
+        
         control = VehicleControl()
-        control.steer = np.clip(steering_cmd, -1.0, 1.0)
+        control.steer = steering_cmd
         control.throttle = np.clip(throttle_cmd, 0.0, 0.6)
         control.brake = np.clip(brake_cmd, 0.0, 0.28)
         
