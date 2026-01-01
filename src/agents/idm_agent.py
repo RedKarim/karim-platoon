@@ -14,7 +14,7 @@ class PurePursuitController:
         self.max_lookahead = max_lookahead
     
     def calculate_steering(self, vehicle_transform, waypoints, current_index, speed):
-        """Calculate steering angle using pure pursuit algorithm."""
+        """Calculate steering angle using pure pursuit algorithm with CTE correction."""
         # Calculate lookahead distance based on speed
         lookahead_distance = np.clip(
             self.lookahead_gain * speed, 
@@ -46,13 +46,43 @@ class PurePursuitController:
         local_x = dx * math.cos(-vehicle_yaw) - dy * math.sin(-vehicle_yaw)
         local_y = dx * math.sin(-vehicle_yaw) + dy * math.cos(-vehicle_yaw)
         
+        # Calculate cross-track error (CTE) - lateral distance from path
+        cte = 0.0
+        if current_index > 0 and current_index < len(waypoints):
+            # Get current and previous waypoints to define path segment
+            current_wp = waypoints[current_index].location
+            prev_wp = waypoints[current_index - 1].location
+            
+            # Vector along the path segment
+            path_vec_x = current_wp.x - prev_wp.x
+            path_vec_y = current_wp.y - prev_wp.y
+            path_length = math.sqrt(path_vec_x**2 + path_vec_y**2)
+            
+            if path_length > 0.01:  # Avoid division by zero
+                # Normalized path direction
+                path_dir_x = path_vec_x / path_length
+                path_dir_y = path_vec_y / path_length
+                
+                # Vector from previous waypoint to vehicle
+                to_vehicle_x = vehicle_x - prev_wp.x
+                to_vehicle_y = vehicle_y - prev_wp.y
+                
+                # Cross-track error (perpendicular distance, signed)
+                # Positive CTE means vehicle is to the left of the path
+                cte = -path_dir_x * to_vehicle_y + path_dir_y * to_vehicle_x
+        
         # Pure pursuit formula: steer = atan(2 * L * sin(alpha) / ld)
         # where L is wheelbase, alpha is angle to lookahead point, ld is lookahead distance
-        # Simplified: steer proportional to lateral error
         wheelbase = 2.8  # Match vehicle.py
         if abs(local_x) > 0.01:  # Avoid division by zero
             curvature = 2.0 * local_y / (lookahead_distance ** 2)
             steer_angle = math.atan(curvature * wheelbase)
+            
+            # Add CTE correction to steer toward lane center
+            # Smaller gain (0.15) for Pure Pursuit since it's already doing geometric path following
+            K_CTE = 0.15
+            steer_angle += K_CTE * cte
+            
             # Normalize to [-1, 1] range (CARLA style)
             max_steer = math.radians(45)  # Match vehicle.py max_steer_angle
             steering = np.clip(steer_angle / max_steer, -1.0, 1.0)

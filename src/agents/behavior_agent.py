@@ -72,7 +72,7 @@ class BehaviorAgent:
         # Waypoints for lateral control
         self.waypoints = None
         self.current_waypoint_index = 0
-        self.waypoint_reached_threshold = 2.0  # Reduced from 5.0 for tighter tracking
+        self.waypoint_reached_threshold = 1.0  # Tight tracking for lane precision
         
         # PID lateral controller (tuned for better curve following)
         self.lat_K_P = 1.5  # Increased from 1.0 for more responsive steering
@@ -134,7 +134,7 @@ class BehaviorAgent:
                 break
     
     def _calculate_steering(self, vehicle_transform):
-        """PID lateral controller."""
+        """PID lateral controller with cross-track error correction."""
         if not self.waypoints or self.current_waypoint_index >= len(self.waypoints):
             return 0.0
         
@@ -152,6 +152,7 @@ class BehaviorAgent:
         
         w_vec = np.array([w_loc.x - ego_loc.x, w_loc.y - ego_loc.y, 0.0])
         
+        # Calculate heading error (angle to target waypoint)
         wv_linalg = np.linalg.norm(w_vec) * np.linalg.norm(v_vec)
         if wv_linalg == 0:
             angle_error = 0.0
@@ -162,6 +163,33 @@ class BehaviorAgent:
         if cross[2] < 0:
             angle_error *= -1.0
         
+        # Calculate cross-track error (lateral distance from path)
+        # CTE is the perpendicular distance from vehicle to the line connecting waypoints
+        cte = 0.0
+        if self.current_waypoint_index > 0:
+            # Get previous waypoint to define path segment
+            prev_wp = self.waypoints[self.current_waypoint_index - 1]
+            if hasattr(prev_wp, 'transform'):
+                prev_loc = prev_wp.transform.location
+            else:
+                prev_loc = prev_wp.location
+            
+            # Vector along the path segment
+            path_vec = np.array([w_loc.x - prev_loc.x, w_loc.y - prev_loc.y, 0.0])
+            path_length = np.linalg.norm(path_vec)
+            
+            if path_length > 0.01:  # Avoid division by zero
+                # Normalized path direction
+                path_dir = path_vec / path_length
+                
+                # Vector from previous waypoint to vehicle
+                to_vehicle = np.array([ego_loc.x - prev_loc.x, ego_loc.y - prev_loc.y, 0.0])
+                
+                # Cross-track error is the perpendicular component
+                # Using cross product to get signed distance
+                cte = np.cross(path_dir, to_vehicle)[2]
+        
+        # PID controller with CTE correction
         self.lat_error_buffer.append(angle_error)
         if len(self.lat_error_buffer) >= 2:
             de = (self.lat_error_buffer[-1] - self.lat_error_buffer[-2]) / self.lat_dt
@@ -170,9 +198,15 @@ class BehaviorAgent:
             de = 0.0
             ie = 0.0
         
-        steering = np.clip((self.lat_K_P * angle_error) + (self.lat_K_D * de) + (self.lat_K_I * ie), -1.0, 1.0)
+        # Steering command: heading correction + CTE correction
+        # Increased CTE gain for stronger lane-center constraint
+        K_CTE = 1.0
+        steering = np.clip(
+            (self.lat_K_P * angle_error) + (self.lat_K_D * de) + (self.lat_K_I * ie) + (K_CTE * cte),
+            -1.0, 1.0
+        )
         
-        # Steering rate limiting
+        # Steering rate limiting for smooth control
         if steering > self.past_steering + self.max_steer_change:
             steering = self.past_steering + self.max_steer_change
         elif steering < self.past_steering - self.max_steer_change:
