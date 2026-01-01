@@ -17,6 +17,7 @@ from src.logic.traffic_light_manager import TrafficLightManager
 from src.logic.traffic_manager import VehicleTrafficManager
 from src.agents.mpc_agent import MPCAgent
 from src.agents.idm_agent import IDMAgent
+from src.core.visualizer import Visualizer
 from src import utils
 
 def main():
@@ -47,19 +48,33 @@ def main():
     # Spawn Traffic Lights (Mock)
     # In reality we'd parse this from somewhere or config. 
     # For now, spawn one traffic light at a known waypoint index
-    tl_loc = waypoint_locations[min(len(waypoint_locations)-10, 100)] # 100th waypoint
-    traffic = world.spawn_actor('traffic_light', Transform(tl_loc))
-    # Configure it
-    traffic_lights_config = {
-        traffic.id: {
-            'initial_state': TrafficLightState.Green,
-            'green_time': 100.0, # Long green for testing
-            'red_time': 5.0
-        }
+    # Traffic Light Setup
+    # EcoLead uses IDs 13, 11, 20. We will place them at approximate equidistant locations on the loop.
+    # Total waypoints ~5000 (roughly based on indices in previous outputs).
+    # TL 13: Index 1200
+    # TL 11: Index 2500
+    # TL 20: Index 3800
+    traffic_light_config = {
+        13: {'initial_state': TrafficLightState.Red, 'green_time': 20.0, 'red_time': 20.0, 'location_index': 1200},
+        11: {'initial_state': TrafficLightState.Green, 'green_time': 20.0, 'red_time': 20.0, 'location_index': 2500},
+        20: {'initial_state': TrafficLightState.Red, 'green_time': 20.0, 'red_time': 20.0, 'location_index': 3800}
     }
+    
+    traffic_lights_dict = {}
+    waypoints = [Waypoint(t) for t in waypoint_transforms] # Re-create waypoints list for clarity
+    for tl_id, config in traffic_light_config.items():
+        if config['location_index'] < len(waypoints):
+            loc = waypoints[config['location_index']].transform.location
+            tl = world.spawn_actor(f"traffic_light.{tl_id}", Transform(loc, Rotation(0,0,0)))
+            tl.id = tl_id # Force ID
+            traffic_lights_dict[tl_id] = tl
+        else:
+            print(f"Warning: Waypoint index {config['location_index']} out of range for TL {tl_id}")
 
-    # Traffic Light Manager
-    tl_manager = TrafficLightManager(client, traffic_lights_config, waypoint_locations)
+    # Initialize Traffic Light Manager with our custom map of lights
+    # We need to pass the config that allows looking up these lights
+    tl_manager = TrafficLightManager(client, traffic_light_config, waypoints)
+    # The manager expects to find lights in world.get_actors(), so we spawned them above.
     
     # Spawn Ego Vehicle
     ego_spawn = waypoint_transforms[0]
@@ -85,6 +100,9 @@ def main():
         num_behind=3 # 3 followers
     )
     
+    # Visualization
+    visualizer = Visualizer(waypoint_locations)
+    
     # Spawn Scenario
     traffic_manager.spawn_scenario()
     
@@ -105,14 +123,28 @@ def main():
             else: # MPC scenario
                 traffic_manager.update_pack(agent, current_tick)
                 
+                
             # Log
             vel = ego_vehicle.get_velocity()
             speed = (vel.x**2 + vel.y**2)**0.5
             print(f"Tick: {current_tick} | Frame Time: {world.time:.2f} | Ego Speed: {speed:.2f} m/s")
             
-            time.sleep(0.1)
+            # Visualization Update
+            # Collect all traffic vehicles from all platoon managers
+            all_traffic = []
+            for pm in traffic_manager.platoon_managers:
+                all_traffic.extend(pm.behind_vehicles)
             
-            if current_tick > 200: # Short run for demo
+            visualizer.update(
+                ego_vehicle, 
+                all_traffic, 
+                tl_manager.get_traffic_lights(),
+                {'tick': current_tick, 'time': world.time, 'speed': speed}
+            )
+
+            # time.sleep(0.1) # Controlled by plt.pause in update
+            
+            if current_tick > 1000: # Longer run
                 break
                 
     except KeyboardInterrupt:
@@ -120,6 +152,7 @@ def main():
     finally:
         traffic_manager.cleanup()
         tl_manager.stop()
+        visualizer.close()
 
 if __name__ == '__main__':
     main()
