@@ -76,16 +76,40 @@ class VehicleTrafficManager:
             
         indices_per_spacing = int(self.spacing / step_dist) if step_dist > 0 else 25
         
+        # Start Ego at distinct position so followers fit behind
+        # Note: Ego is already spawned by main.py, we just need to ensure followers are placed relative to it
+        # Actually, main.py spawns ego at 0. We should probably move ego or assume ego is at 0 and followers are negative?
+        # Better: main.py should spawn ego at index ~300.
+        # But here we only control followers.
+        # If ego is at 0, followers at negative indices will wrap.
+        # Let's assume we can't change ego spawn easily here without changing main.py.
+        # Wait, I CAN change main.py spawn.
+        # For now, let's just make spawn_pack use indices relative to where ego IS.
+        # BUT ego is spawned at 0 in main.py.
+        
+        # Current logic: index = len - ... (wrapping).
+        # We need to change main.py to spawn ego further down.
+        
+        # However, for this function:
         for i in range(self.num_behind):
-            index = len(self.waypoints) - (i+1) * indices_per_spacing
-            if index < 0: index += len(self.waypoints) # Wrap
-            index = index % len(self.waypoints)
+            # If main.py spawns at 0, we can't do much about negative X unless we change route.
+            # Let's assume we will fix main.py to spawn ego at index 300.
+            # So followers will be at 300 - spacing.
+            
+            # Let's just fix the indices calculation here to be:
+            # ego_index - (i+1)*spacing
+            
+            # We need to know ego index.
+            # Assuming ego is at start for now, we will fix main.py next.
+            # If we fix main.py to spawn at index 300:
+            start_index = 400 # ample space
+            
+            index = start_index - (i+1) * indices_per_spacing
+            
+            # Clamp to 0 if needed, but we expect start_index to be large enough
+            index = max(0, index)
             
             spawn_transform = self.waypoints[index]
-            # spawn_transform.location.z += 2 
-            
-            # Spawn logic using our mock World
-            # We assume World.spawn_actor takes (bp, transform)
             vehicle = self.world.spawn_actor('vehicle.mini', spawn_transform)
             
             if vehicle:

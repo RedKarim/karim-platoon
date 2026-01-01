@@ -79,7 +79,11 @@ def main():
     tl_manager = TrafficLightManager(client, traffic_light_config, waypoints)
     
     # Spawn Ego Vehicle
-    ego_spawn = waypoint_transforms[0]
+    ego_spawn_index = 400
+    if len(waypoint_transforms) > 400:
+        ego_spawn = waypoint_transforms[ego_spawn_index]
+    else:
+        ego_spawn = waypoint_transforms[0]
     ego_vehicle = world.spawn_actor('vehicle.mustang', ego_spawn)
     print(f"Spawned Ego Vehicle with ID: {ego_vehicle.id}")
     
