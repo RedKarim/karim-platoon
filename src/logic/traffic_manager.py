@@ -181,7 +181,16 @@ class VehicleTrafficManager:
                 agent._traffic_light_manager = self.traffic_light_manager
                 
                 agent._update_information(ref_v * 3.6)
-                control = agent.run_step(following_vehicle, dist, 0, following_speed, False)
+                
+                # Independent Leader Logic:
+                # If this vehicle is the leader of a split platoon (platoon_id > 1),
+                # it should NOT try to close the gap to the front platoon.
+                # It should maintain speed limit (cruise control) unless emergency.
+                maintain_gap = True
+                if platoon_manager.platoon_id > 1 and platoon_manager.leader_id == id:
+                    maintain_gap = False
+                    
+                control = agent.run_step(following_vehicle, dist, 0, following_speed, False, maintain_gap=maintain_gap)
                 vehicle.apply_control(control)
 
             if mpc_agent:
@@ -245,7 +254,13 @@ class VehicleTrafficManager:
                 self.platoon_managers.append(platoon_status["sub_platoon"])
 
         return optimal_a, ref_v, ref_v_mpc 
-    
+    def get_leader_ids(self):
+        """Get list of IDs for all platoon leaders."""
+        ids = set()
+        for pm in self.platoon_managers:
+            ids.add(pm.leader_id)
+        return ids
+
     def cleanup(self):
         for pm in self.platoon_managers:
             pm.cleanup()

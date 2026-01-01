@@ -206,11 +206,13 @@ def main():
             for pm in traffic_manager.platoon_managers:
                 all_traffic.extend(pm.behind_vehicles)
             
+            leader_ids = traffic_manager.get_leader_ids()
             visualizer.update(
                 ego_vehicle, 
                 all_traffic, 
                 tl_manager.get_traffic_lights(),
-                {'tick': current_tick, 'time': world.time, 'speed': speed}
+                {'tick': current_tick, 'time': world.time, 'speed': speed},
+                leader_ids=leader_ids
             )
 
             # time.sleep(0.1) # Controlled by plt.pause in update

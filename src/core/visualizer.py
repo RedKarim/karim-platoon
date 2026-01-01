@@ -240,7 +240,9 @@ class Visualizer:
             pygame.draw.polygon(surface, color, poly)
             pygame.draw.polygon(surface, (0,0,0), poly, 1)
 
-    def draw_2d_view(self, surface, ego_vehicle, traffic_vehicles, traffic_lights):
+
+
+    def draw_2d_view(self, surface, ego_vehicle, traffic_vehicles, traffic_lights, leader_ids=None):
         """Draw 2D view at top, centered on platoon."""
         surface.fill(BACKGROUND_COLOR)
         
@@ -250,10 +252,6 @@ class Visualizer:
             locations.append(v['vehicle'].get_location().x)
         
         center_x = sum(locations) / len(locations)
-        # Or just use ego if preferred, but center of platoon is better for "seeing all cars"
-        # Wait, if splitting, center might be in gap. 
-        # Better: use ego as anchor, but shift view so ego is towards the right/front?
-        # Let's keep ego centered for simplicity or center_x.
         
         view_start = center_x - self.view_window * 0.5
         
@@ -310,10 +308,18 @@ class Visualizer:
                     surface.blit(t, (int(sx) - 5, road_y + 15))
 
         for i, v_data in enumerate(traffic_vehicles):
-            draw_veh(v_data['vehicle'], FOLLOWER_COLOR, str(i + 1))
+            v_id = v_data.get('id', v_data['vehicle'].id)
+            color = FOLLOWER_COLOR
+            label = str(i + 1)
+            
+            if leader_ids and v_id in leader_ids:
+                color = EGO_COLOR
+                label += " (L)"
+                
+            draw_veh(v_data['vehicle'], color, label)
         draw_veh(ego_vehicle, EGO_COLOR, "L")
 
-    def update(self, ego_vehicle, traffic_vehicles, traffic_lights, tick_info):
+    def update(self, ego_vehicle, traffic_vehicles, traffic_lights, tick_info, leader_ids=None):
         if not self.running: return
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -350,12 +356,18 @@ class Visualizer:
         from .primitives import Vector3D
         self.draw_box_3d(self.surface_3d, ego_vehicle.get_transform(), Vector3D(2.3, 1.0, 0.8), EGO_COLOR)
         for v_data in traffic_vehicles:
+            v_id = v_data.get('id', v_data['vehicle'].id)
             v = v_data['vehicle']
+            
+            color = FOLLOWER_COLOR
+            if leader_ids and v_id in leader_ids:
+                color = EGO_COLOR
+                
             dims = v.bounding_box.extent if hasattr(v, 'bounding_box') else Vector3D(2.3, 1.0, 0.8)
-            self.draw_box_3d(self.surface_3d, v.get_transform(), dims, FOLLOWER_COLOR)
+            self.draw_box_3d(self.surface_3d, v.get_transform(), dims, color)
 
         # 2D Render
-        self.draw_2d_view(self.surface_2d, ego_vehicle, traffic_vehicles, traffic_lights)
+        self.draw_2d_view(self.surface_2d, ego_vehicle, traffic_vehicles, traffic_lights, leader_ids)
 
         # Blit to Screen
         self.screen.blit(self.surface_2d, (0, 0))

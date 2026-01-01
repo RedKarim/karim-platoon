@@ -248,7 +248,9 @@ class BehaviorAgent:
             v_target = v_prev + K1 * gap_error + K2 * (v_leader - v_prev)
         else:
             # Too close: Ignore leader speed, focus on prev vehicle
-            v_target = v_prev + K1 * gap_error
+            # CRITICAL FIX: Strictly cap target speed to preceding vehicle speed to prevent overtaking
+            # We want to be SLOWER than v_prev to restore gap
+            v_target = min(v_prev + K1 * gap_error, v_prev)
         
         if v_ego < 5:
             Kp, Ki, Kd = 0.35, 0.02, 0.5
@@ -259,7 +261,8 @@ class BehaviorAgent:
         else:
             Kp, Ki, Kd = 0.20, 0.05, 0.30
         
-        v_target = max(0, min(v_target, (self._speed_limit) / 3.6 + 2))
+        # Remove the +2 buffer which allows overtaking
+        v_target = max(0, min(v_target, (self._speed_limit) / 3.6))
         speed_error = v_target - v_ego
         
         raw_derivative = (speed_error - self.prev_error) / dt
@@ -291,44 +294,77 @@ class BehaviorAgent:
         control.hand_brake = False
         return control
     
-    def run_step(self, vehicle, distance, distance_to_packleader, leader_velocity, leader, debug=False):
+    def cruise_control(self):
+        """Simple speed keeping behavior."""
+        target_speed = self._speed_limit
+        ego_speed_kmh = self._speed
+        
+        control = VehicleControl()
+        speed_error = (target_speed - ego_speed_kmh) / 3.6
+        if speed_error > 0:
+            control.throttle = np.clip(speed_error * 0.5, 0, 0.75) # Smoother throttle
+            control.brake = 0.0
+        else:
+            control.throttle = 0.0
+            control.brake = np.clip(-speed_error * 0.5, 0, 0.3)
+        return control
+
+    def run_step(self, vehicle, distance, distance_to_packleader, leader_velocity, leader, maintain_gap=True, debug=False):
         """Main control step (from EcoLead)."""
         ego_vehcile_speed = get_speed(self._vehicle)
         
+        # Check traffic lights using route-based distance (matching EcoLead)
+        if hasattr(self, '_traffic_light_manager') and self._traffic_light_manager :
+            for tl_id, tl_data in self._traffic_light_manager.traffic_lights.items():
+                if tl_data['current_state'] in [TrafficLightState.Red, TrafficLightState.Yellow]:
+                    # Use route-based distance from traffic_light_manager (matching EcoLead)
+                    route_distance = tl_data.get('distance', 1000)
+                    
+                    # Speed-dependent critical braking distance (matching IDM agent logic)
+                    current_speed = ego_vehcile_speed / 3.6  # Convert km/h to m/s
+                    critical_distance = max(2.0, current_speed * 1.5)
+                    
+                    if 0 < route_distance <= critical_distance:
+                        control = self.emergency_stop()
+                        control.steer = 0.0  # Straight road
+                        return control
+        
+        # Check braking distance for car following (Emergency Safety Check)
+        col_distance = distance  # Simplified - no collision detection
+        if distance > 0 and col_distance >= -1:
+            # Dynamic safety distance: Static buffer + 1.5s time gap
+            # At 14m/s (50km/h), this adds ~21m, allowing safe stop.
+            current_speed_ms = ego_vehcile_speed / 3.6
+            safety_distance = self._behavior.braking_distance + (current_speed_ms * 1.5)
+            
+            if col_distance < safety_distance and col_distance > 0:
+                 control = self.emergency_stop()
+                 control.steer = 0.0
+                 return control
+
         if leader:
-            # This is leader - simple cruise
+            # This is primary leader (Ego) - simple cruise or MPC handled externally
             control = VehicleControl()
             control.throttle = 0.5
             control.brake = 0.0
         else:
-            # Check traffic lights using route-based distance (matching EcoLead)
-            if hasattr(self, '_traffic_light_manager') and self._traffic_light_manager:
-                for tl_id, tl_data in self._traffic_light_manager.traffic_lights.items():
-                    if tl_data['current_state'] in [TrafficLightState.Red, TrafficLightState.Yellow]:
-                        # Use route-based distance from traffic_light_manager (matching EcoLead)
-                        route_distance = tl_data.get('distance', 1000)
-                        
-                        # Speed-dependent critical braking distance (matching IDM agent logic)
-                        current_speed = ego_vehcile_speed / 3.6  # Convert km/h to m/s
-                        critical_distance = max(2.0, current_speed * 1.5)
-                        
-                        if 0 < route_distance <= critical_distance:
-                            control = self.emergency_stop()
-                            control.steer = 0.0  # Straight road
-                            return control
-            
-            # Check braking distance for car following
-            col_distance = distance  # Simplified - no collision detection
-            if distance > 0 and col_distance >= -1:
-                if col_distance < self._behavior.braking_distance and col_distance > 0:
-                    control = self.emergency_stop()
-                else:
+            if maintain_gap:
+                # Normal following behavior
+                if distance > 0:
                     control = self.car_following_manager(vehicle, distance, debug=True)
+                else:
+                    # Fallback if distance lost but maintain_gap requested (e.g. sensor fail? shouldn't happen in sim)
+                    control = self.cruise_control()
             else:
-                # Normal behavior - free driving
-                control = VehicleControl()
-                control.throttle = 0.5
-                control.brake = 0.0
+                # Independent driving (Split Leader)
+                # We already passed the safety check above.
+                # Just drive at speed limit.
+                control = self.cruise_control()
+        
+        # Straight road - no steering needed
+        control.steer = 0.0
+        
+        return control
         
         # Straight road - no steering needed
         control.steer = 0.0
