@@ -1,9 +1,10 @@
 # Copyright (c) 2025, MAHDYAR KARIMI
 # Ported from EcoLead BehaviorAgent to work without CARLA
+# Simplified for straight road (no lateral control)
 
 """
-BehaviorAgent implements the exact logic from EcoLead's BehaviorAgent.
-This is a complete port with CARLA dependencies removed.
+BehaviorAgent implements longitudinal control for platooning.
+Lateral/steering control removed for straight road simulation.
 """
 
 from ..core.vehicle import VehicleControl
@@ -74,17 +75,15 @@ class BehaviorAgent:
         self.current_waypoint_index = 0
         self.waypoint_reached_threshold = 1.0  # Tight tracking for lane precision
         
-        # PID lateral controller (tuned for better curve following)
-        self.lat_K_P = 1.5  # Increased from 1.0 for more responsive steering
-        self.lat_K_I = 0.0
-        self.lat_K_D = 0.1  # Added small derivative term for damping
-        self.lat_dt = 0.1
-        self.lat_error_buffer = deque(maxlen=10)
+        # PID lateral controller - DISABLED for straight road
+        # self.lat_K_P = 1.5
+        # self.lat_K_I = 0.0
+        # self.lat_K_D = 0.1
+        # self.lat_dt = 0.1
+        # self.lat_error_buffer = deque(maxlen=10)
         
-        # Steering smoothing
+        # Steering disabled for straight road
         self.past_steering = 0.0
-        self.max_steer_change = 0.03  # Reduced from 0.05 for smoother, less noisy steering
-        self.max_steer = 0.8
         
         # Behavior parameters
         if behavior == 'cautious':
@@ -134,87 +133,8 @@ class BehaviorAgent:
                 break
     
     def _calculate_steering(self, vehicle_transform):
-        """PID lateral controller with cross-track error correction."""
-        if not self.waypoints or self.current_waypoint_index >= len(self.waypoints):
-            return 0.0
-        
-        target_waypoint = self.waypoints[self.current_waypoint_index]
-        ego_loc = vehicle_transform.location
-        yaw_rad = math.radians(vehicle_transform.rotation.yaw)
-        v_vec = np.array([math.cos(yaw_rad), math.sin(yaw_rad), 0.0])
-        
-        # Handle both Waypoint objects and raw Transform objects
-        if hasattr(target_waypoint, 'transform'):
-            w_loc = target_waypoint.transform.location
-        else:
-            # It's a Transform object directly
-            w_loc = target_waypoint.location
-        
-        w_vec = np.array([w_loc.x - ego_loc.x, w_loc.y - ego_loc.y, 0.0])
-        
-        # Calculate heading error (angle to target waypoint)
-        wv_linalg = np.linalg.norm(w_vec) * np.linalg.norm(v_vec)
-        if wv_linalg == 0:
-            angle_error = 0.0
-        else:
-            angle_error = math.acos(np.clip(np.dot(w_vec, v_vec) / wv_linalg, -1.0, 1.0))
-        
-        cross = np.cross(v_vec, w_vec)
-        if cross[2] < 0:
-            angle_error *= -1.0
-        
-        # Calculate cross-track error (lateral distance from path)
-        # CTE is the perpendicular distance from vehicle to the line connecting waypoints
-        cte = 0.0
-        if self.current_waypoint_index > 0:
-            # Get previous waypoint to define path segment
-            prev_wp = self.waypoints[self.current_waypoint_index - 1]
-            if hasattr(prev_wp, 'transform'):
-                prev_loc = prev_wp.transform.location
-            else:
-                prev_loc = prev_wp.location
-            
-            # Vector along the path segment
-            path_vec = np.array([w_loc.x - prev_loc.x, w_loc.y - prev_loc.y, 0.0])
-            path_length = np.linalg.norm(path_vec)
-            
-            if path_length > 0.01:  # Avoid division by zero
-                # Normalized path direction
-                path_dir = path_vec / path_length
-                
-                # Vector from previous waypoint to vehicle
-                to_vehicle = np.array([ego_loc.x - prev_loc.x, ego_loc.y - prev_loc.y, 0.0])
-                
-                # Cross-track error is the perpendicular component
-                # Using cross product to get signed distance
-                cte = np.cross(path_dir, to_vehicle)[2]
-        
-        # PID controller with CTE correction
-        self.lat_error_buffer.append(angle_error)
-        if len(self.lat_error_buffer) >= 2:
-            de = (self.lat_error_buffer[-1] - self.lat_error_buffer[-2]) / self.lat_dt
-            ie = sum(self.lat_error_buffer) * self.lat_dt
-        else:
-            de = 0.0
-            ie = 0.0
-        
-        # Steering command: heading correction + CTE correction
-        # Increased CTE gain for stronger lane-center constraint
-        K_CTE = 1.0
-        steering = np.clip(
-            (self.lat_K_P * angle_error) + (self.lat_K_D * de) + (self.lat_K_I * ie) + (K_CTE * cte),
-            -1.0, 1.0
-        )
-        
-        # Steering rate limiting for smooth control
-        if steering > self.past_steering + self.max_steer_change:
-            steering = self.past_steering + self.max_steer_change
-        elif steering < self.past_steering - self.max_steer_change:
-            steering = self.past_steering - self.max_steer_change
-        
-        steering = np.clip(steering, -self.max_steer, self.max_steer)
-        self.past_steering = steering
-        return steering
+        """Steering disabled for straight road - always returns 0."""
+        return 0.0
     
     def car_following_manager_ramp(self, vehicle, distance, debug=True):
         """Ramp-up phase CACC (from EcoLead)."""
@@ -389,12 +309,7 @@ class BehaviorAgent:
                         
                         if 0 < route_distance <= critical_distance:
                             control = self.emergency_stop()
-                            # Apply steering
-                            vehicle_transform = self._vehicle.get_transform()
-                            current_location = self._vehicle.get_location()
-                            self._update_waypoint_progress(current_location)
-                            steering = self._calculate_steering(vehicle_transform)
-                            control.steer = steering
+                            control.steer = 0.0  # Straight road
                             return control
             
             # Check braking distance for car following
@@ -410,11 +325,7 @@ class BehaviorAgent:
                 control.throttle = 0.5
                 control.brake = 0.0
         
-        # Apply steering (lateral control)
-        vehicle_transform = self._vehicle.get_transform()
-        current_location = self._vehicle.get_location()
-        self._update_waypoint_progress(current_location)
-        steering = self._calculate_steering(vehicle_transform)
-        control.steer = steering
+        # Straight road - no steering needed
+        control.steer = 0.0
         
         return control

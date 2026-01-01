@@ -3,17 +3,17 @@ MPCController:
   dt: 0.1                # Time step duration (seconds)
   ref_v: 13.88              # Reference velocity (m/s) - ~50 km/h
   a_max: 4.0              # Maximum acceleration (m/s^2)
-  steer_max_deg: 25       # Maximum steering angle in degrees
+  steer_max_deg: 0        # No steering for straight road
   v_max: 16              # Maximum allowed velocity in city
 
-  # Cost function weights
+  # Cost function weights - tuned for straight road (longitudinal only)
   weights:
-    cte: 10          # Cross-Track Error weight
-    epsi: 300      # Orientation Error weight
+    cte: 0           # Cross-Track Error - disabled for straight road
+    epsi: 0          # Orientation Error - disabled for straight road
     v: 700           # Velocity error weight
-    delta: 1.0            # Steering actuation weight
+    delta: 0            # Steering actuation - disabled
     a: 5              # Acceleration actuation weight
-    diff_delta: 200    # Sequential steering change weight
+    diff_delta: 0      # Sequential steering change - disabled
     diff_a: 250           # Sequential acceleration change weight
 
   # Fuel consumption coefficients

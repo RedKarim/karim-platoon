@@ -56,11 +56,14 @@ def main():
     map_obj = Map(waypoints=[Waypoint(t) for t in waypoint_transforms])
     world.set_map(map_obj)
     
-    # Traffic Light Setup (matching EcoLead)
+    # Traffic Light Setup - 6 signals along 1500m straight road
     traffic_light_config = {
-        13: {'initial_state': TrafficLightState.Red, 'green_time': 20.0, 'red_time': 20.0, 'location_index': 1200},
-        11: {'initial_state': TrafficLightState.Green, 'green_time': 20.0, 'red_time': 20.0, 'location_index': 2500},
-        20: {'initial_state': TrafficLightState.Red, 'green_time': 20.0, 'red_time': 20.0, 'location_index': 3800}
+        1: {'initial_state': TrafficLightState.Red, 'green_time': 25.0, 'red_time': 20.0, 'location_index': 666},    # 200m
+        2: {'initial_state': TrafficLightState.Green, 'green_time': 25.0, 'red_time': 20.0, 'location_index': 1333}, # 400m
+        3: {'initial_state': TrafficLightState.Red, 'green_time': 25.0, 'red_time': 20.0, 'location_index': 2000},   # 600m
+        4: {'initial_state': TrafficLightState.Green, 'green_time': 25.0, 'red_time': 20.0, 'location_index': 3000}, # 900m
+        5: {'initial_state': TrafficLightState.Red, 'green_time': 25.0, 'red_time': 20.0, 'location_index': 3666},   # 1100m
+        6: {'initial_state': TrafficLightState.Green, 'green_time': 25.0, 'red_time': 20.0, 'location_index': 4333}, # 1300m
     }
     
     traffic_lights_dict = {}
@@ -150,9 +153,12 @@ def main():
                 'Velocity': speed,
                 'Position_X': ego_pos.x,
                 'Position_Y': ego_pos.y,
-                'Light State 13': tl_states.get(13, 'Unknown'),
-                'Light State 11': tl_states.get(11, 'Unknown'),
-                'Light State 20': tl_states.get(20, 'Unknown')
+                'Light State 1': tl_states.get(1, 'Unknown'),
+                'Light State 2': tl_states.get(2, 'Unknown'),
+                'Light State 3': tl_states.get(3, 'Unknown'),
+                'Light State 4': tl_states.get(4, 'Unknown'),
+                'Light State 5': tl_states.get(5, 'Unknown'),
+                'Light State 6': tl_states.get(6, 'Unknown')
             }
             trajectory_data.append(ego_data)
             
@@ -218,28 +224,28 @@ def main():
                 df_v['Distance_cumulative'] = df_v['Distance_step'].cumsum()
                 vehicle_dfs[v_id] = df_v
             
-            # Define traffic light positions (from example code)
+            # Define traffic light positions on straight road
             traffic_lights = {
-                13: 224,   # Traffic light 13 at 224m
-                11: 456,   # Traffic light 11 at 456m
-                20: 585,   # Traffic light 20 at 585m
-                113: 224 + 784,  # Traffic light 13 at 1008m (second round)
-                111: 456 + 784,  # Traffic light 11 at 1240m (second round)
-                120: 588 + 784   # Traffic light 20 at 1372m (second round)
+                1: 200,    # Traffic light 1 at 200m
+                2: 400,    # Traffic light 2 at 400m
+                3: 600,    # Traffic light 3 at 600m
+                4: 900,    # Traffic light 4 at 900m
+                5: 1100,   # Traffic light 5 at 1100m
+                6: 1300,   # Traffic light 6 at 1300m
             }
             
             # Create plot
-            fig = plt.figure(figsize=(12, 8))
+            fig = plt.figure(figsize=(14, 10))
             
             # Plot traffic light phases
             time = df_ego['Timestamp'] - df_ego['Timestamp'].iloc[0]
             tl_states = {
-                13: df_ego['Light State 13'],
-                11: df_ego['Light State 11'],
-                20: df_ego['Light State 20'],
-                113: df_ego['Light State 13'],  # Second round
-                111: df_ego['Light State 11'],
-                120: df_ego['Light State 20']
+                1: df_ego['Light State 1'],
+                2: df_ego['Light State 2'],
+                3: df_ego['Light State 3'],
+                4: df_ego['Light State 4'],
+                5: df_ego['Light State 5'],
+                6: df_ego['Light State 6'],
             }
             
             for tl_id, position in traffic_lights.items():

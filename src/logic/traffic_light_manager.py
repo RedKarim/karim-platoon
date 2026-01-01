@@ -46,7 +46,8 @@ class TrafficLightManager:
     def initialize_traffic_lights(self):
         all_traffic_lights = self.world.get_actors().filter('traffic.traffic_light')
         current_tick = self.world.get_snapshot().frame
-        custom_order = [13, 11, 20]
+        # For straight road: traffic lights 1-6
+        custom_order = list(self.traffic_lights_config.keys())
 
         for tl in all_traffic_lights:
             if tl.id in self.traffic_lights_config:
@@ -73,30 +74,18 @@ class TrafficLightManager:
                 }
                 print(f"Traffic Light {tl.id} initialized with state {initial_state} and {self.traffic_lights[tl.id]['remaining_time']:.2f} seconds remaining.")
                 
-        # Reorder
-        self.traffic_lights = {key: self.traffic_lights[key] for key in custom_order if key in self.traffic_lights}
+        # Sort traffic lights by ID for straight road
+        self.traffic_lights = {key: self.traffic_lights[key] for key in sorted(self.traffic_lights.keys())}
 
     def calculate_route_distance(self, start_location, end_location):
-        # Simple distance check for closest waypoint index
-        if not self.waypoints: return 0.0
-        
-        # In our primitive Location, .distance() exists
-        start_index = min(range(len(self.waypoints)), key=lambda i: start_location.distance(self.waypoints[i]))
-        end_index = min(range(len(self.waypoints)), key=lambda i: end_location.distance(self.waypoints[i]))
-        # print(f"Start Index: {start_index}, End Index: {end_index}")
-
-        # Basic logic for circular or linear path distance summation
-        if start_index == end_index:
-            total_distance = 0.0
-        elif start_index < end_index:
-            route_waypoints = self.waypoints[start_index:end_index]
-            total_distance = sum(route_waypoints[i].distance(route_waypoints[i+1]) for i in range(len(route_waypoints)-1))
-        else:
-             # Wrap around logic (mocked)
-            route_waypoints = self.waypoints[start_index:] + self.waypoints[:end_index]
-            total_distance = sum(route_waypoints[i].distance(route_waypoints[i+1]) for i in range(len(route_waypoints)-1))
-            
-        return total_distance
+        """
+        Calculate distance along straight road (simply X coordinate difference).
+        For straight road, distance is just the X difference since all waypoints are along X axis.
+        """
+        # Straight road: distance is just the difference in X coordinates
+        # Positive distance means end is ahead of start
+        distance = end_location.x - start_location.x
+        return max(0, distance)  # Only positive distances (ahead)
 
     def update_traffic_lights(self, vehicle_location, current_tick):
         self.current_tick = current_tick

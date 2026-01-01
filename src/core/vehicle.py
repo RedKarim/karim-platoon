@@ -56,7 +56,7 @@ class Vehicle:
         self.is_alive = False
 
     def tick(self, dt):
-        """Update vehicle state with realistic physics calibrated to CARLA Tesla Model 3."""
+        """Update vehicle state for straight-line motion (no steering/lateral dynamics)."""
         # Current state
         x = self.transform.location.x
         y = self.transform.location.y
@@ -77,20 +77,17 @@ class Vehicle:
         # Non-linear throttle/brake response
         if self.control.throttle > 0:
             # Diminishing returns at high speeds (drag and power limits)
-            # Electric motors have constant torque at low speeds, diminishing at high speeds
-            speed_factor = max(0.3, 1.0 - (v / 30.0))  # Reduced power at high speed
+            speed_factor = max(0.3, 1.0 - (v / 30.0))
             acc_input = self.control.throttle * max_accel * speed_factor
         elif self.control.brake > 0:
             # Progressive braking force
             if self.control.brake > 0.5:
-                # Emergency braking (regenerative + friction brakes)
                 acc_input = -self.control.brake * max_brake_decel
             else:
-                # Comfortable braking (mostly regenerative)
                 acc_input = -self.control.brake * comfortable_brake
         else:
-            # Coasting - apply rolling resistance and minimal drag
-            rolling_resistance = -0.01 * 9.81  # ~1% grade equivalent
+            # Coasting - apply rolling resistance
+            rolling_resistance = -0.01 * 9.81
             acc_input = rolling_resistance
         
         # Apply aerodynamic drag (quadratic with velocity)
@@ -99,26 +96,20 @@ class Vehicle:
             drag_accel = -drag_force / vehicle_mass
             acc_input += drag_accel
         
-        # Lateral dynamics - Kinematic Bicycle Model
-        steer_angle = self.control.steer * self.max_steer_angle
-        
-        # Prevent division by zero at low speeds
-        if v > 0.1:
-            yaw_rate = (v / self.wheelbase) * math.tan(steer_angle)
-        else:
-            yaw_rate = 0
+        # Straight-line motion only - no lateral dynamics
+        # Vehicle maintains constant heading (yaw unchanged)
         
         # Integrate state using forward Euler
         new_x = x + v * math.cos(yaw) * dt
         new_y = y + v * math.sin(yaw) * dt
-        new_yaw = yaw + yaw_rate * dt
         new_v = max(0, v + acc_input * dt)  # Prevent negative velocity
         
-        # Update State
+        # Update State - yaw stays constant (straight road)
         self.transform.location.x = new_x
         self.transform.location.y = new_y
-        self.transform.rotation.yaw = math.degrees(new_yaw)
+        # self.transform.rotation.yaw stays unchanged (straight motion)
         
+        new_yaw = yaw  # Keep original heading
         self.velocity.x = new_v * math.cos(new_yaw)
         self.velocity.y = new_v * math.sin(new_yaw)
         

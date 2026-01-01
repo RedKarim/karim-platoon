@@ -107,6 +107,10 @@ class MPCAgent(object):
         self.current_wp_idx = 0
 
     def on_tick(self,ref_v,stop_location=None):
+        """
+        MPC control tick - simplified for straight road.
+        Steering is always 0, MPC optimizes acceleration only.
+        """
         self.ref_v = ref_v
         
         if hasattr(self.vehicle.velocity, 'magnitude'): # Vector3D from primitives
@@ -136,11 +140,7 @@ class MPCAgent(object):
         )
 
         if stop_location:
-            # Simple check if stop location is reached? 
-            # Original code assumes stop_location boolean/check outside or inside.
-            # Step 42 code: if stop_location: apply brake. stop_location seems to be boolean or object?
-            # on_tick definition in Step 42: def on_tick(self,ref_v,stop_location):
-            control = VehicleControl(throttle=0.0, brake=1.0)
+            control = VehicleControl(throttle=0.0, brake=1.0, steer=0.0)
             self.vehicle.apply_control(control)
             return 0, False, self.ref_v
 
@@ -154,26 +154,27 @@ class MPCAgent(object):
         coeffs = np.polyfit(x_vals, y_vals, 3)
         coeffs = coeffs[::-1] 
 
-        cte = np.polyval(coeffs, 0)
-        epsi = - np.arctan(coeffs[1])
+        # For straight road, CTE and EPSI should be ~0
+        cte = 0.0  # No cross-track error on straight road
+        epsi = 0.0  # No heading error on straight road
 
         pred_x = current_velocity * self.dt
         pred_y = 0
-        pred_psi = normalize_angle((current_velocity * self.prev_delta / (self.ego_model.front_wb + self.ego_model.rear_wb)) * self.dt)
+        pred_psi = 0.0  # No steering on straight road
         pred_v = current_velocity + calculated_acceleration * self.dt
-        pred_cte = cte + current_velocity * np.sin(epsi) * self.dt
-        pred_epsi = normalize_angle(epsi + pred_psi)
+        pred_cte = 0.0  # Straight road
+        pred_epsi = 0.0  # Straight road
 
         current_state = np.array([pred_x, pred_y, pred_psi, pred_v, pred_cte, pred_epsi])
         
-        result = self.mpc_controller.solve(current_state, coeffs, self.prev_delta, self.prev_a, self.ref_v)
+        result = self.mpc_controller.solve(current_state, coeffs, 0.0, self.prev_a, self.ref_v)
         if result is None:
             # Solver failed
             return 0, False, self.ref_v
             
         optimal_delta, optimal_a, mpc_x, mpc_y = result
 
-        self.prev_delta = optimal_delta
+        self.prev_delta = 0.0  # Always 0 for straight road
         self.prev_a = optimal_a[0]
 
         throttle_cmd, brake_cmd = map_acceleration_to_throttle_brake(optimal_a[0], 
@@ -181,21 +182,9 @@ class MPCAgent(object):
                                                                      -self.mpc_controller.a_max, 
                                                                      should_brake=False)
         
-        # Normalize MPC steering output
-        steering_cmd = float(optimal_delta / math.radians(25))
-        
-        # Apply steering rate limiting to reduce noise/oscillation
-        if steering_cmd > self.past_steering + self.max_steer_change:
-            steering_cmd = self.past_steering + self.max_steer_change
-        elif steering_cmd < self.past_steering - self.max_steer_change:
-            steering_cmd = self.past_steering - self.max_steer_change
-        
-        # Clip and save for next iteration
-        steering_cmd = np.clip(steering_cmd, -1.0, 1.0)
-        self.past_steering = steering_cmd
-        
+        # Straight road - no steering needed
         control = VehicleControl()
-        control.steer = steering_cmd
+        control.steer = 0.0  # Always 0 for straight road
         control.throttle = np.clip(throttle_cmd, 0.0, 0.6)
         control.brake = np.clip(brake_cmd, 0.0, 0.28)
         
