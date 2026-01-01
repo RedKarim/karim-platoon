@@ -67,9 +67,20 @@ class VehicleTrafficManager:
 
     def spawn_pack(self):
         previous_vehicle = self.ego_vehicle
+        # Calculate approximate step size from first few waypoints
+        step_dist = 0.3 # Default guess
+        if len(self.waypoints) > 1:
+            loc0 = self.waypoints[0].location
+            loc1 = self.waypoints[1].location
+            step_dist = loc0.distance(loc1)
+            if step_dist == 0: step_dist = 0.3
+            
+        indices_per_spacing = int(self.spacing / step_dist) if step_dist > 0 else 25
+        
         for i in range(self.num_behind):
-            index = len(self.waypoints) - int((i+1) * self.spacing)
+            index = len(self.waypoints) - (i+1) * indices_per_spacing
             if index < 0: index += len(self.waypoints) # Wrap
+            index = index % len(self.waypoints)
             
             spawn_transform = self.waypoints[index]
             # spawn_transform.location.z += 2 

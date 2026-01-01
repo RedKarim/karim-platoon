@@ -32,4 +32,13 @@ class TrafficLight:
         self.stop_waypoints = waypoints
         
     def get_stop_waypoints(self):
+        # Mock: return list containing self as waypoint if empty
+        # Logic expects list[1]
+        if not self.stop_waypoints:
+            from .primitives import Waypoint
+            wp = Waypoint(self.transform)
+            return [wp, wp]
         return self.stop_waypoints
+
+    def get_location(self):
+        return self.transform.location

@@ -1,6 +1,10 @@
 from .platoon_manager import PlatoonManager
 import math
 from ..core.traffic_light import TrafficLightState
+# Mock carla module for compatibility with ported code
+class MockCarla:
+    TrafficLightState = TrafficLightState
+carla = MockCarla()
 
 class TrafficLightManager:
     def __init__(self, client, traffic_lights_config, waypoint_locations):
@@ -8,9 +12,9 @@ class TrafficLightManager:
         self.world = client.get_world()
         self.traffic_lights_config = traffic_lights_config
         self.traffic_lights = {}
-        # Assuming waypoint_locations are already simplified locations or we convert them
-        self.waypoints = waypoint_locations 
-        self.fixed_delta_seconds = self.world.get_settings().fixed_delta_seconds
+        # Handle Waypoint objects from my core
+        self.waypoints = [wp.transform.location if hasattr(wp, 'transform') else wp for wp in waypoint_locations]
+        self.fixed_delta_seconds = 0.1 # Default, can get from settings if needed
         self.v_min = 1
         self.v_max = 50/3.6
         self.ref_v = self.v_max
@@ -180,19 +184,171 @@ class TrafficLightManager:
     # I might miss some methods if not careful. I'll include 'calculate_reference_velocity' dummy here.
 
     def calculate_reference_velocity(self, current_speed=0):
-        # Simplistic logic for now
-        # Returns ref_v, platoon_status, tl_id, eta_to_light
+        # Full logic derived from EcoLead
+        # 1) Get current time 
+        current_time = self.world.get_snapshot().timestamp.elapsed_seconds
+        # If start_time has not been set, record it now
+        if self.start_time is None:
+            self.start_time = current_time
+
+        # Calculate how many seconds have passed since we first started
+        sim_time_elapsed = current_time - self.start_time
+        # 2) Add the 8-second delay check
+        if sim_time_elapsed < self.init_delay:
+            # print("[CALC REF VEL] We are within the initial 5s offset; skipping logic.")
+            return self.ref_v, {
+                "mode": "WAITING",  
+                "velocity": self.ref_v,
+                "front_group": [self.platoon_manager.pam.vehicle_ids],
+                "rear_group": [],
+                "sub_platoon": None
+            }, None, 1000
         
-        platoon_status = {
-            "mode": "stable",
-            "sub_platoon": None,
-            "rear_group": []
-        }
+        pam = self.platoon_manager.pam
+        all_pcms = self.platoon_manager.pcms
+        related_pcms = [pcm for pcm in all_pcms if pcm.vehicle_id in pam.vehicle_ids]
+        if not related_pcms: return self.ref_v, {"mode":"NONE","velocity":self.ref_v,"front_group":[],"rear_group":[],"sub_platoon":None}, None, 100
         
-        # Check active traffic light interacting with
-        # For mock, just return self.ref_v
+        leader_pcm = related_pcms[0]
+        last_pcm = related_pcms[-1]
+
+        # Find the traffic light with the minimum distance
+        # Filter traffic lights that are 'ahead' (distance > 0 or handled by cyclic logic)
+        # Using the update_traffic_lights calculated distances
+        valid_tls = {k: v for k, v in self.traffic_lights.items() if 'distance' in v}
+        if not valid_tls:
+             return self.ref_v, {"mode":"NONE","velocity":self.ref_v,"front_group":[],"rear_group":[],"sub_platoon":None}, None, 100
+             
+        self.corridor_id, tl_data = min(
+            valid_tls.items(), key=lambda item: item[1]['distance'])
+        distance_to_light = tl_data['distance']
         
-        return self.ref_v, platoon_status, 13, 10
+        if distance_to_light - pam.platoon_length >= 300:
+            # print("[CALC REF VEL] Traffic Light is too far away.")
+            return pam.platoon_speed, {
+                "mode": "WAITING FOR SPAT",
+                "velocity": pam.platoon_speed,
+                "front_group": [pam.vehicle_ids],
+                "rear_group": [],
+                "sub_platoon": None
+            }, self.corridor_id, 100
+        
+        target_speed = leader_pcm.target_speed if leader_pcm.target_speed > 0.1 else 13.0
+        if distance_to_light - pam.platoon_length < 0 or (distance_to_light-pam.platoon_length)<target_speed:
+            self.corridor_change = True
+            # print(f"[CALC REF VEL] Corridor Change Detected: {self.corridor_id}.")
+        else: self.corridor_change = False
+
+        # print(f"[CALC REF VEL] Calculating reference velocity for TL: {self.corridor_id}.")
+        # print(f"[CALC REF VEL] Distance to Light of Entire Platoon: {distance_to_light:.5f} m.")
+
+        # If too close, just keep the reference velocity
+        if distance_to_light < pam.platoon_speed:
+            # print("[CALC REF VEL] Last Vehicle is too close to the traffic light.")
+            return pam.platoon_speed, {
+                "mode": "PASSING",
+                "velocity": pam.platoon_speed,
+                "front_group": [pam.vehicle_ids],
+                "rear_group": [],
+                "sub_platoon": None
+            }, self.corridor_id, max(0.1,tl_data["distance"]/(pam.platoon_speed+0.001))
+
+        # 3) Compute feasible green windows
+        feasible_windows = self._compute_feasible_green_windows()
+        if not feasible_windows:
+            # print("[CALC REF VEL] No feasible green windows => fallback to v_min.")
+            return self.ref_v, {
+                "mode": "NONE",
+                "velocity": None,
+                "front_group": [],
+                "rear_group": [],
+                "sub_platoon": None
+            }, self.corridor_id, None
+        
+        # Decide which window to use
+        platoon_id = self.platoon_manager.platoon_id
+        # print(f"[CALC REF VEL] Platoon ID: {platoon_id}")
+        
+        # Default first window
+        (vf_start, vf_end, green_start, green_end) = feasible_windows[0]
+        # print(f"[CALC REF VEL] Green Window for platoon id {platoon_id} => start: {green_start:.2f}, end: {green_end:.2f}, vf_start: {vf_start:.2f}, vf_end: {vf_end:.2f}")
+
+        # print(f"Green Window => start: {green_start:.2f}, end: {green_end:.2f}")
+        feasible_range = (vf_start, vf_end)
+
+        #  saturation check
+        bool_sat, v_saturation = self._check_saturation_flow(pam.platoon_length, green_start, green_end, vf_start, distance_to_light)
+        # print(f"[CALC REF VEL] Saturation check {bool_sat} with v_saturation={v_saturation:.2f} m/s.")
+        
+        # 4) Check entire platoon feasibility 
+        if feasible_range and bool_sat and (pam.platoon_speed > v_saturation or self.corridor_change):
+            # print(f"[CALC REF VEL] Entire Platoon feasibility check.")
+            entire_check = self._check_entire_platoon_feasibility(
+                feasible_range,
+                distance_to_light,
+                green_start,
+                green_end,
+                related_pcms,
+                pam,
+                v_saturation
+            )
+            if entire_check["status"] == "ENTIRE":
+                # Entire can pass
+                self.ref_v = entire_check["velocity"]
+                # print(f"[CALC REF VEL] Entire platoon => ENTIRE, Ref Vel= {self.ref_v:.4f} m/s.")
+                return self.ref_v, {
+                    "mode": "ENTIRE",
+                    "velocity": self.ref_v,
+                    "front_group": related_pcms,
+                    "rear_group": [],
+                    "sub_platoon": None
+                }, self.corridor_id, tl_data["distance"]/self.ref_v
+
+            elif entire_check["status"] == "SPLIT":
+                # print("[CALC REF VEL] Last car not feasible => partial split attempt.")
+                result = self.split_for_first_green_window(
+                    pam=pam,
+                    pcms=related_pcms,
+                    distance_to_light=distance_to_light,
+                    green_start=green_start,
+                    green_end=green_end,
+                    feasible_range=feasible_range,
+                    v_saturation=v_saturation
+                )
+                eta_to_light = max(0.1,tl_data["distance"]/(result["velocity"]+0.001)) if result["velocity"] else 100
+                # print(f"[CALC REF VEL] Partial split => Ref Vel= {result['velocity']} m/s.")
+                return self._finalize_split_decision(result, self.corridor_id,eta_to_light)
+
+            else:
+                # print("[CALC REF VEL] Leader not feasible => partial split attempt.")
+                if len(feasible_windows) > 1:
+                    (vf_start, vf_end, green_start, green_end) = feasible_windows[1]
+                    feasible_range = (vf_start, vf_end)
+                    result = self.split_for_first_green_window(
+                        pam=pam,
+                        pcms=related_pcms,
+                        distance_to_light=distance_to_light,
+                        green_start=green_start,
+                        green_end=green_end,
+                        feasible_range=feasible_range,
+                        v_saturation=v_saturation
+                    )
+                    eta_to_light = max(0.1,tl_data["distance"]/(result["velocity"]+0.001)) if result["velocity"] else 100
+                    return self._finalize_split_decision(result, self.corridor_id,eta_to_light)
+
+        # 5) If feasible_range is None => partial or none
+        # print("[CALC REF VEL] feasible_range or saturatin check fails => partial-split attempt.")
+        result = self.split_for_first_green_window(
+            pam=pam,
+            pcms=related_pcms,
+            distance_to_light=distance_to_light,
+            green_start=green_start,
+            green_end=green_end,
+            feasible_range=feasible_range,
+            v_saturation=v_saturation
+        )
+        eta_to_light = max(0.1,tl_data["distance"]/(result["velocity"]+0.001)) if result.get("velocity") else 100
+        return self._finalize_split_decision(result, self.corridor_id,eta_to_light)
 
 
     def find_feasible_velocity_range(self, distance_full, green_start, green_end):
