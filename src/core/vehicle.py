@@ -56,30 +56,63 @@ class Vehicle:
         self.is_alive = False
 
     def tick(self, dt):
-        """Update vehicle state based on control and dt."""
-        # Simple Kinematic Bicycle Model
-        
-        # Input: throttle [0,1], brake [0,1], steer [-1, 1]
-        acc_input = self.control.throttle * 5.0 - self.control.brake * 10.0 # simple scaling
-        steer_angle = self.control.steer * self.max_steer_angle
-        
+        """Update vehicle state with realistic physics calibrated to CARLA Tesla Model 3."""
         # Current state
         x = self.transform.location.x
         y = self.transform.location.y
         yaw = math.radians(self.transform.rotation.yaw)
         v = math.sqrt(self.velocity.x**2 + self.velocity.y**2)
         
-        # Heading change
-        # beta = arctan(lr / (lf + lr) * tan(steer)) -> approximated for CG at center
-        # yaw_rate = v / L * tan(steer_angle)
-        yaw_rate = (v / self.wheelbase) * math.tan(steer_angle)
+        # Realistic vehicle parameters (calibrated to CARLA Tesla Model 3)
+        max_accel = 3.0  # m/s^2 (realistic for electric vehicle)
+        max_brake_decel = 8.0  # m/s^2 (emergency braking)
+        comfortable_brake = 4.0  # m/s^2 (normal braking)
         
-        # Update
+        # Aerodynamic parameters
+        drag_coefficient = 0.24  # Tesla Model 3 Cd
+        frontal_area = 2.2  # m^2
+        air_density = 1.225  # kg/m^3
+        vehicle_mass = 1847  # kg (Tesla Model 3)
+        
+        # Non-linear throttle/brake response
+        if self.control.throttle > 0:
+            # Diminishing returns at high speeds (drag and power limits)
+            # Electric motors have constant torque at low speeds, diminishing at high speeds
+            speed_factor = max(0.3, 1.0 - (v / 30.0))  # Reduced power at high speed
+            acc_input = self.control.throttle * max_accel * speed_factor
+        elif self.control.brake > 0:
+            # Progressive braking force
+            if self.control.brake > 0.5:
+                # Emergency braking (regenerative + friction brakes)
+                acc_input = -self.control.brake * max_brake_decel
+            else:
+                # Comfortable braking (mostly regenerative)
+                acc_input = -self.control.brake * comfortable_brake
+        else:
+            # Coasting - apply rolling resistance and minimal drag
+            rolling_resistance = -0.01 * 9.81  # ~1% grade equivalent
+            acc_input = rolling_resistance
+        
+        # Apply aerodynamic drag (quadratic with velocity)
+        if v > 0.1:
+            drag_force = 0.5 * drag_coefficient * air_density * frontal_area * (v ** 2)
+            drag_accel = -drag_force / vehicle_mass
+            acc_input += drag_accel
+        
+        # Lateral dynamics - Kinematic Bicycle Model
+        steer_angle = self.control.steer * self.max_steer_angle
+        
+        # Prevent division by zero at low speeds
+        if v > 0.1:
+            yaw_rate = (v / self.wheelbase) * math.tan(steer_angle)
+        else:
+            yaw_rate = 0
+        
+        # Integrate state using forward Euler
         new_x = x + v * math.cos(yaw) * dt
         new_y = y + v * math.sin(yaw) * dt
         new_yaw = yaw + yaw_rate * dt
-        new_v = v + acc_input * dt
-        if new_v < 0: new_v = 0 # No reverse for simplicity unless requested
+        new_v = max(0, v + acc_input * dt)  # Prevent negative velocity
         
         # Update State
         self.transform.location.x = new_x
@@ -89,5 +122,5 @@ class Vehicle:
         self.velocity.x = new_v * math.cos(new_yaw)
         self.velocity.y = new_v * math.sin(new_yaw)
         
-        self.acceleration.x = acc_input * math.cos(new_yaw) # Simplified (tangential only)
+        self.acceleration.x = acc_input * math.cos(new_yaw)
         self.acceleration.y = acc_input * math.sin(new_yaw)
