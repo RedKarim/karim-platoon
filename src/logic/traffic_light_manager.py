@@ -105,12 +105,17 @@ class TrafficLightManager:
             self.processed_ids = set()
 
         for tl_id, tl_data in list(self.traffic_lights.items()):
-            # Mocking: traffic light actor assumes get_stop_waypoints returns a list of waypoints
+            # Get stop waypoints - match EcoLead's approach
             stop_waypoints = tl_data['actor'].get_stop_waypoints()
             if stop_waypoints:
-                stop_location = stop_waypoints[0].transform.location # Taking first
+                # EcoLead uses index [1] for right lane stop waypoint when available
+                # Use the last waypoint if we don't have multiple lanes, else use appropriate index
+                if len(stop_waypoints) > 1:
+                    stop_location = stop_waypoints[1].transform.location  # Right lane (match EcoLead)
+                else:
+                    stop_location = stop_waypoints[0].transform.location  # Single lane
             else:
-                 # Fallback if no stop waypoints (should rely on config/init)
+                # Fallback if no stop waypoints
                 stop_location = tl_data['actor'].get_transform().location
 
             distance_to_light = self.calculate_route_distance(vehicle_location, stop_location)
