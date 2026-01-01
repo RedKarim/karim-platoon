@@ -94,7 +94,7 @@ class VehicleTrafficManager:
                 
                 # CRITICAL: Set waypoints for steering! Convert waypoints to (waypoint, RoadOption) tuples
                 # RoadOption is not used in our implementation, so we use None
-                waypoint_plan = [(wp, None) for wp in self.map_waypoints]
+                waypoint_plan = [(wp, None) for wp in self.waypoints]
                 agent.set_global_plan(waypoint_plan)
                 print(f"Set global plan with {len(waypoint_plan)} waypoints for follower agent")
                 

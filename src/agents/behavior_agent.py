@@ -72,18 +72,18 @@ class BehaviorAgent:
         # Waypoints for lateral control
         self.waypoints = None
         self.current_waypoint_index = 0
-        self.waypoint_reached_threshold = 5.0
+        self.waypoint_reached_threshold = 2.0  # Reduced from 5.0 for tighter tracking
         
-        # PID lateral controller
-        self.lat_K_P = 1.0
+        # PID lateral controller (tuned for better curve following)
+        self.lat_K_P = 1.5  # Increased from 1.0 for more responsive steering
         self.lat_K_I = 0.0
-        self.lat_K_D = 0.0
+        self.lat_K_D = 0.1  # Added small derivative term for damping
         self.lat_dt = 0.1
         self.lat_error_buffer = deque(maxlen=10)
         
         # Steering smoothing
         self.past_steering = 0.0
-        self.max_steer_change = 0.05  # Reduced from 0.1 for smoother, less noisy steering
+        self.max_steer_change = 0.03  # Reduced from 0.05 for smoother, less noisy steering
         self.max_steer = 0.8
         
         # Behavior parameters
@@ -119,7 +119,13 @@ class BehaviorAgent:
         
         while self.current_waypoint_index < len(self.waypoints):
             target_wp = self.waypoints[self.current_waypoint_index]
-            target_location = target_wp.transform.location
+            # Handle both Waypoint objects and raw Transform objects
+            if hasattr(target_wp, 'transform'):
+                target_location = target_wp.transform.location
+            else:
+                # It's a Transform object directly
+                target_location = target_wp.location
+            
             distance = current_location.distance(target_location)
             
             if distance < self.waypoint_reached_threshold:
@@ -137,7 +143,13 @@ class BehaviorAgent:
         yaw_rad = math.radians(vehicle_transform.rotation.yaw)
         v_vec = np.array([math.cos(yaw_rad), math.sin(yaw_rad), 0.0])
         
-        w_loc = target_waypoint.transform.location
+        # Handle both Waypoint objects and raw Transform objects
+        if hasattr(target_waypoint, 'transform'):
+            w_loc = target_waypoint.transform.location
+        else:
+            # It's a Transform object directly
+            w_loc = target_waypoint.location
+        
         w_vec = np.array([w_loc.x - ego_loc.x, w_loc.y - ego_loc.y, 0.0])
         
         wv_linalg = np.linalg.norm(w_vec) * np.linalg.norm(v_vec)

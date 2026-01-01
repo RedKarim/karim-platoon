@@ -108,7 +108,7 @@ class IDMAgent:
         
         # Steering smoothing (match EcoLead's rate limiting)
         self.past_steering = 0.0
-        self.max_steer_change = 0.05  # Reduced from 0.1 for smoother, less noisy steering
+        self.max_steer_change = 0.03  # Reduced from 0.05 for smoother, less noisy steering
         self.max_steer = 0.8  # Max steering angle
         
     def get_vehicle_state(self):
