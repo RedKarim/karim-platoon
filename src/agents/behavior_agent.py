@@ -342,14 +342,18 @@ class BehaviorAgent:
             control.throttle = 0.5
             control.brake = 0.0
         else:
-            # Check traffic lights
+            # Check traffic lights using route-based distance (matching EcoLead)
             if hasattr(self, '_traffic_light_manager') and self._traffic_light_manager:
-                vehicle_location = self._vehicle.get_location()
                 for tl_id, tl_data in self._traffic_light_manager.traffic_lights.items():
                     if tl_data['current_state'] in [TrafficLightState.Red, TrafficLightState.Yellow]:
-                        tl_loc = tl_data['actor'].transform.location
-                        dist_to_light = vehicle_location.distance(tl_loc)
-                        if 0 <= dist_to_light <= 2.0:
+                        # Use route-based distance from traffic_light_manager (matching EcoLead)
+                        route_distance = tl_data.get('distance', 1000)
+                        
+                        # Speed-dependent critical braking distance (matching IDM agent logic)
+                        current_speed = ego_vehcile_speed / 3.6  # Convert km/h to m/s
+                        critical_distance = max(2.0, current_speed * 1.5)
+                        
+                        if 0 < route_distance <= critical_distance:
                             control = self.emergency_stop()
                             # Apply steering
                             vehicle_transform = self._vehicle.get_transform()
@@ -359,7 +363,7 @@ class BehaviorAgent:
                             control.steer = steering
                             return control
             
-            # Check braking distance
+            # Check braking distance for car following
             col_distance = distance  # Simplified - no collision detection
             if distance > 0 and col_distance >= -1:
                 if col_distance < self._behavior.braking_distance and col_distance > 0:
@@ -367,12 +371,12 @@ class BehaviorAgent:
                 else:
                     control = self.car_following_manager(vehicle, distance, debug=True)
             else:
-                # Normal behavior
+                # Normal behavior - free driving
                 control = VehicleControl()
                 control.throttle = 0.5
                 control.brake = 0.0
         
-        # Apply steering
+        # Apply steering (lateral control)
         vehicle_transform = self._vehicle.get_transform()
         current_location = self._vehicle.get_location()
         self._update_waypoint_progress(current_location)
