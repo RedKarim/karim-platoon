@@ -138,18 +138,38 @@ class IDMAgent:
                 break
 
     def _check_traffic_light_braking(self, traffic_light_manager):
-        current_location = self.vehicle.get_location()
-        # Iterate over traffic lights
+        """
+        Check if immediate emergency braking is needed for red/yellow traffic lights.
+        Uses speed-dependent critical distance matching EcoLead logic.
+        
+        Returns:
+            bool: True if immediate braking is needed
+        """
+        from ..core.traffic_light import TrafficLightState
+        
+        v = self.vehicle.get_velocity()
+        current_speed = math.sqrt(v.x**2 + v.y**2)
+        
+        # Speed-dependent critical distance (matching EcoLead logic)
+        # At higher speeds, need more distance to brake safely
+        CRITICAL_BRAKE_DISTANCE = max(2.0, current_speed * 1.5)  # 1.5s at current speed
+        SAFETY_MARGIN = 5.0  # Additional margin for early warning
+        
         for tl_id, tl_data in traffic_light_manager.traffic_lights.items():
-            state = tl_data['current_state']
-            if state in [TrafficLightState.Red, TrafficLightState.Yellow]:
-                # Recompute direct distance
-                tl_loc = tl_data['actor'].transform.location
-                direct_dist = current_location.distance(tl_loc)
+            if tl_data['current_state'] in [TrafficLightState.Red, TrafficLightState.Yellow]:
+                distance = tl_data.get('distance', 1000)
                 
-                # Fixed: Match EcoLead's condition (0 <= dist <= 0.5)
-                if 0 <= direct_dist <= self.TRAFFIC_LIGHT_MIN_DISTANCE:
-                     return True
+                # Check if within critical braking distance
+                if 0 < distance < CRITICAL_BRAKE_DISTANCE:
+                    print(f"[IDM Agent] EMERGENCY BRAKE! Distance={distance:.1f}m, "
+                          f"Speed={current_speed:.1f}m/s, Critical={CRITICAL_BRAKE_DISTANCE:.1f}m")
+                    return True
+                
+                # Early warning for upcoming red light (informational only)
+                if 0 < distance < (CRITICAL_BRAKE_DISTANCE + SAFETY_MARGIN):
+                    print(f"[IDM Agent] Approaching red light at {distance:.1f}m, "
+                          f"Speed={current_speed:.1f}m/s")
+                    
         return False
 
     def on_tick(self, traffic_light_manager):
