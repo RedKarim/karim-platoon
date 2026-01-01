@@ -201,7 +201,7 @@ def main():
 
             # time.sleep(0.1) # Controlled by plt.pause in update
             
-            if current_tick > 1000: # Longer run
+            if current_tick > 1500: # Longer run
                 break
                 
     except KeyboardInterrupt:
@@ -262,17 +262,15 @@ def main():
                             color=color, linewidth=3, alpha=0.6)
             
             # Plot ego vehicle trajectory
-            plt.plot(time, df_ego['Distance_cumulative'], 
+            plt.plot(time, df_ego['Position_X'], 
                     color='blue', label=f'{mode} Vehicle (Ego)', linewidth=2.5)
             
             # Plot follower vehicles
-            other_vehicles_start_point = [-12 * (i + 1) for i in range(len(vehicle_dfs))]
             counter = 0
-            for (v_id, df_v), start_y in zip(sorted(vehicle_dfs.items()), other_vehicles_start_point):
+            for v_id, df_v in sorted(vehicle_dfs.items()):
                 counter += 1
-                adjusted_y = df_v['Distance_cumulative'] + start_y
                 v_time = df_v['Time'] - df_v['Time'].iloc[0]
-                plt.plot(v_time, adjusted_y, label=f'Vehicle {counter}', linewidth=2)
+                plt.plot(v_time, df_v['Position_X'], label=f'Vehicle {counter}', linewidth=2)
             
             # Formatting
             plt.xlabel('Time (s)', fontsize=12)
