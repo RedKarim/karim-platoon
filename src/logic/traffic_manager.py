@@ -3,8 +3,7 @@ import random
 import math
 from datetime import datetime
 from .platoon_manager import PlatoonManager
-from ..agents.simple_agent import SimpleAgent
-# from carla_components.local_planner import RoadOption # Not used in simple agent
+from ..agents.behavior_agent import BehaviorAgent
 
 class VehicleTrafficManager:
     def __init__(self, client, world, waypoints, scenario, behaviour, ego_vehicle, traffic_light_manager, num_behind, num_vehicles=20, spacing=7.5, front_vehicle_autopilot=False):
@@ -90,8 +89,15 @@ class VehicleTrafficManager:
             vehicle = self.world.spawn_actor('vehicle.mini', spawn_transform)
             
             if vehicle:
-                print("Creating Basic Agents with global plan for behind vehicles.")
-                agent = SimpleAgent(vehicle, behavior=self.behaviour)
+                print("Creating Behavior Agents with global plan for behind vehicles.")
+                agent = BehaviorAgent(vehicle, behavior=self.behaviour)
+                
+                # CRITICAL: Set waypoints for steering! Convert waypoints to (waypoint, RoadOption) tuples
+                # RoadOption is not used in our implementation, so we use None
+                waypoint_plan = [(wp, None) for wp in self.map_waypoints]
+                agent.set_global_plan(waypoint_plan)
+                print(f"Set global plan with {len(waypoint_plan)} waypoints for follower agent")
+                
                 role_name = f'behind_{i+1}'
                 
                 print(f"Spawned behind vehicle {i+1} at index {index}")
@@ -145,6 +151,9 @@ class VehicleTrafficManager:
                     distances.append(dist)
                 
                 following_speed = math.sqrt(following_vehicle.get_velocity().x**2 + following_vehicle.get_velocity().y**2)
+                
+                # Pass traffic light manager to agent for traffic light awareness
+                agent._traffic_light_manager = self.traffic_light_manager
                 
                 agent._update_information(ref_v * 3.6)
                 control = agent.run_step(following_vehicle, dist, 0, following_speed, False)
