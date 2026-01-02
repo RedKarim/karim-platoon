@@ -58,12 +58,12 @@ def main():
     
     # Traffic Light Setup - 6 signals along 1500m straight road
     traffic_light_config = {
-        1: {'initial_state': TrafficLightState.Red, 'green_time': 25.0, 'red_time': 20.0, 'location_index': 666},    # 200m
-        2: {'initial_state': TrafficLightState.Green, 'green_time': 25.0, 'red_time': 20.0, 'location_index': 1333}, # 400m
-        3: {'initial_state': TrafficLightState.Red, 'green_time': 25.0, 'red_time': 20.0, 'location_index': 2000},   # 600m
-        4: {'initial_state': TrafficLightState.Green, 'green_time': 25.0, 'red_time': 20.0, 'location_index': 3000}, # 900m
-        5: {'initial_state': TrafficLightState.Red, 'green_time': 25.0, 'red_time': 20.0, 'location_index': 3666},   # 1100m
-        6: {'initial_state': TrafficLightState.Green, 'green_time': 25.0, 'red_time': 20.0, 'location_index': 4333}, # 1300m
+        1: {'initial_state': TrafficLightState.Red, 'green_time': 20.0, 'red_time': 20.0, 'location_index': 666},    # 200m
+        2: {'initial_state': TrafficLightState.Green, 'green_time': 20.0, 'red_time': 20.0, 'location_index': 1333}, # 400m
+        3: {'initial_state': TrafficLightState.Red, 'green_time': 20.0, 'red_time': 20.0, 'location_index': 2000},   # 600m
+        4: {'initial_state': TrafficLightState.Green, 'green_time': 20.0, 'red_time': 20.0, 'location_index': 3000}, # 900m
+        5: {'initial_state': TrafficLightState.Red, 'green_time': 20.0, 'red_time': 20.0, 'location_index': 3666},   # 1100m
+        6: {'initial_state': TrafficLightState.Green, 'green_time': 20.0, 'red_time': 20.0, 'location_index': 4333}, # 1300m
     }
     
     traffic_lights_dict = {}

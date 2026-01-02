@@ -377,7 +377,7 @@ class TrafficLightManager:
         if leader_velocity < 0.001: arrival_time = float('inf')
         else: arrival_time = (distance_to_stop_line / leader_velocity) + delta_time_leader
         
-        if arrival_time < green_end: return True
+        if arrival_time < (green_end - 5.0): return True
         return False
 
     def split_for_first_green_window(self, pam, pcms, distance_to_light, green_start, green_end, feasible_range, v_saturation):
@@ -436,7 +436,7 @@ class TrafficLightManager:
             }
 
         pam.split_decision_cntr += 1
-        if pam.split_decision_cntr >= 5:
+        if pam.split_decision_cntr >= 3:
             self.split_counter += 1
             sub_platoon = self.platoon_manager.split_platoon(
                 platoon=feasible_front_group,
