@@ -277,7 +277,17 @@ def main():
 
             # time.sleep(0.1) # Controlled by plt.pause in update
             
-            if current_tick > 1500: # Longer run
+            # Check termination condition: Last vehicle must pass 1500m
+            all_x_positions = [ego_pos.x]
+            for pm in traffic_manager.platoon_managers:
+                 for v_data in pm.behind_vehicles:
+                     all_x_positions.append(v_data['vehicle'].get_location().x)
+            
+            min_x = min(all_x_positions)
+            
+            # Timeout safety (e.g. 600s / 6000 ticks) to prevent infinite loop if stuck
+            if min_x > 1500.0 or current_tick > 6000:
+                print(f"Simulation ended. All vehicles passed 1500m (Min X: {min_x:.2f}) or Timeout.")
                 break
                 
     except KeyboardInterrupt:
@@ -369,6 +379,8 @@ def main():
             plt.xlabel('Time (s)')
             plt.ylabel('Position X (m)')
             plt.title(plot_title)
+            plt.xlim(0, 150) # Force Time 0 to 150s as requested
+            plt.ylim(bottom=0) # Force Position 0
             plt.legend()
             plt.grid(True)
             plt.tight_layout()
