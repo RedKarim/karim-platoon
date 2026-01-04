@@ -289,7 +289,7 @@ class Visualizer:
             if outline_color:
                 pygame.draw.polygon(surface, outline_color, poly, 1)
 
-    def draw_vehicle_realistic(self, surface, vehicle, is_ego=False):
+    def draw_vehicle_realistic(self, surface, vehicle, is_leader=False):
         """Draw a more detailed vehicle model with wheels and cabin."""
         transform = vehicle.get_transform()
         loc = transform.location
@@ -300,8 +300,9 @@ class Visualizer:
         height_chassis = 0.6
         height_cabin = 0.5
         
-        chassis_color = EGO_COLOR if is_ego else FOLLOWER_COLOR
-        cabin_color = CABIN_COLOR if is_ego else CABIN_FOLLOWER_COLOR
+        # Color logic: Leaders are Blue (Ego-like), Followers are Red
+        chassis_color = EGO_COLOR if is_leader else FOLLOWER_COLOR
+        cabin_color = CABIN_COLOR if is_leader else CABIN_FOLLOWER_COLOR
         
         # 1. Wheels (4 boxes)
         wheel_radius = 0.35
@@ -322,8 +323,6 @@ class Visualizer:
         # Draw Wheels
         for wx, wy in wheel_offsets:
             w_pos = get_world_pos(wx, wy, wheel_radius)
-            # Wheel is a box for now, maybe rotated? 
-            # Simple box
             w_trans = T(w_pos, transform.rotation)
             self.draw_box_mesh(surface, w_trans, (wheel_radius, wheel_width/2, wheel_radius), TIRE_COLOR, None)
 
@@ -338,7 +337,6 @@ class Visualizer:
         self.draw_box_mesh(surface, cab_trans, (length/3, width/2.2, height_cabin/2), cabin_color, (0,0,0))
         
         # 4. Headlights (Yellow quads on front face of Chassis)
-        # Simplified: Just small boxes
         hl_pos_l = get_world_pos(length/2 + 0.05, 0.6, wheel_radius + height_chassis/2)
         hl_pos_r = get_world_pos(length/2 + 0.05, -0.6, wheel_radius + height_chassis/2)
         self.draw_box_mesh(surface, T(hl_pos_l, transform.rotation), (0.05, 0.2, 0.1), (255, 255, 200), None)
@@ -350,26 +348,59 @@ class Visualizer:
         self.draw_box_mesh(surface, T(tl_pos_l, transform.rotation), (0.05, 0.2, 0.1), (200, 0, 0), None)
         self.draw_box_mesh(surface, T(tl_pos_r, transform.rotation), (0.05, 0.2, 0.1), (200, 0, 0), None)
 
+        # 5. Vehicle ID Label
+        # Right side of vehicle (approx +Y in my coords)
+        label_pos_world = get_world_pos(0, 2.5, 2.5) 
+        
+        # Project single point
+        pts = np.array([[label_pos_world.x, label_pos_world.y, label_pos_world.z]])
+        proj, mask = self.camera.project_points(pts)
+        
+        if proj is not None and mask[0]:
+            sx, sy = proj[0]
+            label_text = f"ID:{vehicle.id}"
+            
+            # Simple text with outline
+            text_surf = self.font.render(label_text, True, (255, 255, 255))
+            stroke_surf = self.font.render(label_text, True, (0, 0, 0))
+            
+            # Draw stroke/shadow
+            self.screen.blit(stroke_surf, (sx+1, TOP_VIEW_HEIGHT + sy+1))
+            self.screen.blit(text_surf, (sx, TOP_VIEW_HEIGHT + sy))
+
     def draw_traffic_light_realistic(self, surface, tl_data, tl_id):
         """Draw realistic traffic light with pole and lamps."""
         actor = tl_data['actor']
         state = tl_data['current_state']
         transform = actor.get_transform()
         
+        # Offset logic: Move to side of road (Left side requested)
+        # Assuming road width ~7.5m, place pole at y = -6.0
         loc = transform.location
+        offset_y = -6.0
         
         # 1. Pole (Tall thin box)
         pole_height = 6.0
-        pole_pos = L(loc.x, loc.y, pole_height/2)
+        pole_pos = L(loc.x, loc.y + offset_y, pole_height/2)
         pole_trans = T(pole_pos, transform.rotation)
         self.draw_box_mesh(surface, pole_trans, (0.2, 0.2, pole_height/2), TL_POLE_COLOR, None)
+        
+        # 2. Mast Arm (Cantilever extending towards road center)
+        # Pole at -6, extending to ~-2 (over left lane)
+        arm_len = 3.5
+        arm_h = pole_height - 0.5
+        # Center of arm box
+        arm_pos = L(loc.x, loc.y + offset_y + arm_len/2, arm_h) 
+        arm_trans = T(arm_pos, transform.rotation)
+        self.draw_box_mesh(surface, arm_trans, (0.15, arm_len/2, 0.15), TL_POLE_COLOR, None)
         
         # 3. Housing (Vertical Box) mounting the lights
         housing_h = 1.0
         housing_w = 0.4
         housing_d = 0.4
-        housing_z = pole_height - 1.5
-        housing_pos = L(loc.x, loc.y, housing_z)
+        housing_z = arm_h - 0.5 
+        
+        housing_pos = L(loc.x, loc.y + offset_y + arm_len, housing_z) # End of arm
         housing_trans = T(housing_pos, transform.rotation)
         self.draw_box_mesh(surface, housing_trans, (housing_d/2, housing_w/2, housing_h/2), (30, 30, 30))
         
@@ -573,14 +604,19 @@ class Visualizer:
                     
         # Vehicles
         dist = np.linalg.norm(np.array([ego_vehicle.get_location().x, ego_vehicle.get_location().y, 0]) - cam_pos)
-        render_queue.append((dist, 'VEH', ego_vehicle, True)) # is_ego
+        render_queue.append((dist, 'VEH', ego_vehicle, True)) # is_leader (Ego is always leader)
         
         for v_data in traffic_vehicles:
             v_id = v_data.get('id', v_data['vehicle'].id)
             v = v_data['vehicle']
             dist = np.linalg.norm(np.array([v.get_location().x, v.get_location().y, 0]) - cam_pos)
+            
+            is_leader = False
+            if leader_ids and v_id in leader_ids:
+                is_leader = True
+            
             if dist < 200:
-                render_queue.append((dist, 'VEH', v, False))
+                render_queue.append((dist, 'VEH', v, is_leader))
                 
         # Sort back to front (larger distance first) for Painter's Algorithm
         render_queue.sort(key=lambda x: x[0], reverse=True)
