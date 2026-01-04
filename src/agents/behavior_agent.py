@@ -11,6 +11,8 @@ from ..core.vehicle import VehicleControl
 from ..core.traffic_light import TrafficLightState  
 import math
 import numpy as np
+import time
+import json
 from collections import deque
 
 #
@@ -75,14 +77,6 @@ class BehaviorAgent:
         self.current_waypoint_index = 0
         self.waypoint_reached_threshold = 1.0  # Tight tracking for lane precision
         
-        # PID lateral controller - DISABLED for straight road
-        # self.lat_K_P = 1.5
-        # self.lat_K_I = 0.0
-        # self.lat_K_D = 0.1
-        # self.lat_dt = 0.1
-        # self.lat_error_buffer = deque(maxlen=10)
-        
-        # Steering disabled for straight road
         self.past_steering = 0.0
         
         # Behavior parameters
@@ -97,7 +91,35 @@ class BehaviorAgent:
         
         # Traffic light manager reference
         self._traffic_light_manager = None
-    
+        
+        # Remote Mode
+        self.remote_mode = False
+        self.mqtt_client = None
+        self.control_buffer = {}
+        self.current_latency = 0.0
+
+    def set_remote_mode(self, enabled, mqtt_client):
+        self.remote_mode = enabled
+        self.mqtt_client = mqtt_client
+        if self.remote_mode and self.mqtt_client:
+            topic = f"platoon/vehicle/{self._vehicle.id}/control"
+            self.mqtt_client.subscribe(topic, self._on_control_message)
+
+    def _on_control_message(self, topic, payload):
+        try:
+            if isinstance(payload, str):
+                data = json.loads(payload)
+            else:
+                data = payload
+            self.control_buffer = data
+            
+            ts_sent = data.get('timestamp_sent_from_vehicle', 0)
+            if ts_sent > 0:
+                self.current_latency = time.time() - ts_sent
+                
+        except Exception as e:
+            print(f"Error parsing control msg: {e}")
+
     def _update_information(self, ego_vehicle_speed=None):
         """Update agent information."""
         self._speed = get_speed(self._vehicle)
@@ -227,8 +249,8 @@ class BehaviorAgent:
             if v_ego < 13:
                 return self.car_following_manager_ramp(vehicle, current_gap)
         
-        min_gap, max_gap = 6, 15.0
-        s_0 = 1
+        min_gap, max_gap = 2.0, 15.0 # User requested 2m safe distance
+        s_0 = 2.0 # Minimum standstill distance
         T_gap = 1
         if v_ego < 5:
             s_desired = max(min_gap, s_0 + v_ego * T_gap * 0.6)
@@ -285,7 +307,7 @@ class BehaviorAgent:
             control.brake = np.clip(-control_error * 2.0, 0, 0.3)
         
         return control
-    
+
     def emergency_stop(self):
         """Emergency stop."""
         control = VehicleControl()
@@ -309,38 +331,112 @@ class BehaviorAgent:
             control.brake = np.clip(-speed_error * 0.5, 0, 0.3)
         return control
 
-    def run_step(self, vehicle, distance, distance_to_packleader, leader_velocity, leader, maintain_gap=True, debug=False):
-        """Main control step (from EcoLead)."""
-        ego_vehcile_speed = get_speed(self._vehicle)
-        
-        # Check traffic lights using route-based distance (matching EcoLead)
-        if hasattr(self, '_traffic_light_manager') and self._traffic_light_manager :
+    def _check_safety(self, distance, ego_speed_kmh):
+        """
+        Performs emergency safety checks.
+        Returns a control object if emergency braking is needed, else None.
+        """
+        # Cheating: Check traffic lights using route-based distance (matching EcoLead)
+        # Note: This relies on _traffic_light_manager being injected
+        if hasattr(self, '_traffic_light_manager') and self._traffic_light_manager:
             for tl_id, tl_data in self._traffic_light_manager.traffic_lights.items():
                 if tl_data['current_state'] in [TrafficLightState.Red, TrafficLightState.Yellow]:
-                    # Use route-based distance from traffic_light_manager (matching EcoLead)
                     route_distance = tl_data.get('distance', 1000)
-                    
-                    # Speed-dependent critical braking distance (matching IDM agent logic)
-                    current_speed = ego_vehcile_speed / 3.6  # Convert km/h to m/s
+                    current_speed = ego_speed_kmh / 3.6
                     critical_distance = max(2.0, current_speed * 1.5)
                     
                     if 0 < route_distance <= critical_distance:
-                        control = self.emergency_stop()
-                        control.steer = 0.0  # Straight road
-                        return control
-        
-        # Check braking distance for car following (Emergency Safety Check)
-        col_distance = distance  # Simplified - no collision detection
-        if distance > 0 and col_distance >= -1:
-            # Dynamic safety distance: Static buffer + 1.5s time gap
-            # At 14m/s (50km/h), this adds ~21m, allowing safe stop.
-            current_speed_ms = ego_vehcile_speed / 3.6
+                        # Red light emergency
+                        return self.emergency_stop()
+
+        # Follower Safety Check
+        if distance > -1: # Valid distance
+            col_distance = distance
+            current_speed_ms = ego_speed_kmh / 3.6
+            
+            # 1. Absolute Minimum Safety Gap (Hard constraint)
+            # If we are closer than 2.0m, we MUST brake hard, regardless of speed.
+            # Using 2.5m as trigger to ensure we don't breach 2.0m
+            if col_distance < 2.5: 
+                 return self.emergency_stop()
+
+            # 2. Dynamic Safety Gap (Speed dependent)
+            # braking_distance param (approx 4-6m) + Reaction time buffer (1.5s)
             safety_distance = self._behavior.braking_distance + (current_speed_ms * 1.5)
             
-            if col_distance < safety_distance and col_distance > 0:
-                 control = self.emergency_stop()
-                 control.steer = 0.0
-                 return control
+            if col_distance < safety_distance:
+                 return self.emergency_stop()
+                 
+        return None
+
+    def run_step(self, vehicle, distance, distance_to_packleader, leader_velocity, leader, maintain_gap=True, debug=False):
+        """Main control step (from EcoLead)."""
+        ego_vehicle_speed = get_speed(self._vehicle)
+        
+        # ------------------------------------------------------------------
+        # CRITICAL SAFETY CHECK (Edge Override)
+        # ------------------------------------------------------------------
+        # This runs LOCALLY on the vehicle always. 
+        # Limits the authority of Remote Control or Local Planner to prevent crashes.
+        
+        safety_override = self._check_safety(distance, ego_vehicle_speed)
+        
+        # ------------------------------------------------------------------
+        # REMOTE MODE
+        # ------------------------------------------------------------------
+        if self.remote_mode and self.mqtt_client:
+            # Prepare state payload
+            leader_id = vehicle.id if vehicle else -1
+            leader_speed_m_s = get_speed(vehicle)/3.6 if vehicle else 0.0
+            
+            state_data = {
+                'id': self._vehicle.id,
+                'timestamp': time.time(),
+                'type': 'behavior_agent',
+                'v': ego_vehicle_speed / 3.6,
+                'parameters': {
+                    'gap': distance,
+                    'leader_id': leader_id,
+                    'leader_v': leader_speed_m_s,
+                    'speed_limit': self._speed_limit,
+                    'maintain_gap': maintain_gap
+                }
+            }
+            
+            self.mqtt_client.publish(f"platoon/vehicle/{self._vehicle.id}/state", state_data)
+            
+            # Check for control
+            if self.control_buffer:
+                th = self.control_buffer.get('throttle', 0.0)
+                br = self.control_buffer.get('brake', 0.0)
+                
+                control = VehicleControl()
+                control.throttle = th
+                control.brake = br
+                control.steer = 0.0
+                
+                # APPLY OVERRIDE IF NEEDED
+                if safety_override:
+                    # Logs could be added here
+                    # print(f"Vehicle {self._vehicle.id}: Safety Override Triggered! Remote ignored.")
+                    return safety_override
+                
+                return control
+            else:
+                 # Default if no control
+                if safety_override: return safety_override
+                control = VehicleControl()
+                control.steer = 0.0
+                return control
+
+        # ------------------------------------------------------------------
+        # LOCAL MODE (Existing Logic)
+        # ------------------------------------------------------------------
+        
+        # Apply safety override for local mode too
+        if safety_override:
+            safety_override.steer = 0.0
+            return safety_override
 
         if leader:
             # This is primary leader (Ego) - simple cruise or MPC handled externally
@@ -357,14 +453,7 @@ class BehaviorAgent:
                     control = self.cruise_control()
             else:
                 # Independent driving (Split Leader)
-                # We already passed the safety check above.
-                # Just drive at speed limit.
                 control = self.cruise_control()
-        
-        # Straight road - no steering needed
-        control.steer = 0.0
-        
-        return control
         
         # Straight road - no steering needed
         control.steer = 0.0

@@ -6,7 +6,7 @@ from .platoon_manager import PlatoonManager
 from ..agents.behavior_agent import BehaviorAgent
 
 class VehicleTrafficManager:
-    def __init__(self, client, world, waypoints, scenario, behaviour, ego_vehicle, traffic_light_manager, num_behind, ego_spawn_index=0, num_vehicles=20, spacing=7.5, front_vehicle_autopilot=False):
+    def __init__(self, client, world, waypoints, scenario, behaviour, ego_vehicle, traffic_light_manager, num_behind, ego_spawn_index=0, num_vehicles=20, spacing=7.5, front_vehicle_autopilot=False, mqtt_client_factory=None):
         self.client = client
         self.world = world
         self.num_vehicles = num_vehicles
@@ -31,6 +31,8 @@ class VehicleTrafficManager:
         self.ego_spawn_index = ego_spawn_index
         # self.setup_traffic_manager()
         self.start_time = None
+        self.mqtt_client_factory = mqtt_client_factory
+        self.mqtt_clients = []
 
     def setup_traffic_manager(self):
         pass
@@ -116,6 +118,13 @@ class VehicleTrafficManager:
             if vehicle:
                 print("Creating Behavior Agents with global plan for behind vehicles.")
                 agent = BehaviorAgent(vehicle, behavior=self.behaviour)
+                
+                # Remote Mode for Follower
+                if self.mqtt_client_factory:
+                    client = self.mqtt_client_factory(vehicle.id)
+                    client.connect()
+                    agent.set_remote_mode(True, client)
+                    self.mqtt_clients.append(client)
                 
                 # CRITICAL: Set waypoints for steering! Convert waypoints to (waypoint, RoadOption) tuples
                 # RoadOption is not used in our implementation, so we use None
@@ -264,3 +273,5 @@ class VehicleTrafficManager:
     def cleanup(self):
         for pm in self.platoon_managers:
             pm.cleanup()
+        for client in self.mqtt_clients:
+            client.disconnect()
