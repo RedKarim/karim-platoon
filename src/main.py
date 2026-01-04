@@ -5,8 +5,8 @@ import sys
 import pandas as pd
 import matplotlib.pyplot as plt
 import math
+import threading
 
-# Add project root to path for imports to work
 # Add project root to path for imports to work
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(project_root)
@@ -21,21 +21,55 @@ from src.agents.mpc_agent import MPCAgent
 from src.agents.idm_agent import IDMAgent
 from src.core.visualizer import Visualizer
 from src import utils
+from src.logic.mqtt_interface import MQTTClientWrapper
+from src.logic.cloud_controller import CloudController
 
 def main():
-    # Check command line arguments (matching EcoLead)
-    if len(sys.argv) != 2:
-        print("Usage: python3 main.py [MPC|IDM]")
-        print("  MPC: Run with MPC controller and platoon scenario")
-        print("  IDM: Run with IDM controller and platoon scenario")
-        sys.exit(1)
+    # Check command line arguments
+    # Usage: python3 main.py [MPC|IDM] [MQTT|MQTTMITIGATE]
     
-    mode = sys.argv[1].upper()
+    mode = 'MPC'
+    use_mqtt = False
+    mitigate_latency = False
+    
+    if len(sys.argv) >= 2:
+        mode = sys.argv[1].upper()
+        
+    if len(sys.argv) >= 3:
+        option = sys.argv[2].upper()
+        if option == 'MQTT':
+            use_mqtt = True
+        elif option == 'MQTTMITIGATE':
+            use_mqtt = True
+            mitigate_latency = True
+            
     if mode not in ['MPC', 'IDM']:
         print("Error: Mode must be either 'MPC' or 'IDM'")
         sys.exit(1)
-    
+        
     print(f"Running simulation in {mode} mode")
+    if use_mqtt:
+        print(f"MQTT Enabled. Latency Mitigation: {mitigate_latency}")
+        
+    # Setup MQTT logic
+    cloud_controller = None
+    mqtt_clients = []
+    
+    def mqtt_client_factory(v_id):
+        client = MQTTClientWrapper(f"vehicle_{v_id}")
+        mqtt_clients.append(client)
+        return client
+
+    if use_mqtt:
+        # Load config for CloudController
+        config_path = os.path.join(os.path.dirname(__file__), '..', 'config/config.yaml')
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+            
+        cloud_controller = CloudController(config)
+        cloud_controller.start()
+        # Give it a moment to connect
+        time.sleep(1)
 
     # Load Config
     config_path = os.path.join(os.path.dirname(__file__), '..', 'config/config.yaml')
@@ -84,8 +118,6 @@ def main():
     spacing = 7.5
     required_distance = num_followers * spacing
     
-    # Estimate waypoint index (assuming 0.3m spacing from route gen)
-    # We can also search waypoints for distance > required_distance
     ego_spawn_index = 0
     for i, wp in enumerate(waypoint_transforms):
         if wp.location.x >= required_distance:
@@ -107,12 +139,21 @@ def main():
         behavior = 'normal'
         agent = MPCAgent(ego_vehicle, config)
         print("Initialized MPC Agent")
+        
+        if use_mqtt:
+            mqtt_client = mqtt_client_factory(ego_vehicle.id)
+            mqtt_client.connect()
+            agent.set_remote_mode(True, mqtt_client, mitigate_latency=mitigate_latency)
+            mqtt_clients.append(mqtt_client) # Track for cleanup
+            
     else:  # IDM mode
         scenario = 'idm_packleader'  # IDM mode: ego vehicle with followers
         ego_vehicle_controller = 'idm'
         behavior = 'normal'
         agent = IDMAgent(ego_vehicle, waypoint_transforms, config)
         print("Initialized IDM Agent")
+        # NOTE: IDMAgent remote mode not implemented in this scope as request focused on MPC mainly,
+        # but logic supports it if we updated IDMAgent. For now assume IDM is local if mode=IDM.
 
     # Traffic Manager (matching EcoLead configuration)
     traffic_manager = VehicleTrafficManager(
@@ -122,7 +163,8 @@ def main():
         ego_vehicle=ego_vehicle,
         traffic_light_manager=tl_manager,
         num_behind=7,  # 7 followers (match EcoLead)
-        ego_spawn_index=ego_spawn_index 
+        ego_spawn_index=ego_spawn_index,
+        mqtt_client_factory=mqtt_client_factory if use_mqtt else None # Pass factory
     )
     
     # Visualization
@@ -131,9 +173,8 @@ def main():
     # Spawn Scenario
     traffic_manager.spawn_scenario()
     
-    # Initialize data collection for trajectory plot
-    trajectory_data = []
-    vehicle_data = {}  # Track data for each follower vehicle
+    # Initialize data collection for trajectory plot AND CSV logging
+    trajectory_data = [] # List of dicts
     
     # Loop
     try:
@@ -154,52 +195,71 @@ def main():
                 # MPC mode with platoon
                 traffic_manager.update_pack(agent, current_tick)
                 
-            # Log
+            # Log Data
+            # "save the data of all the cars in a csv file lke how the Ecolead project does"
+            # We will gather data for ALL cars (Ego + Followers) into one list/DataFrame.
+            
+            # Gather Ego Stats
             vel = ego_vehicle.get_velocity()
             speed = (vel.x**2 + vel.y**2)**0.5  # m/s
             ego_pos = ego_vehicle.get_location()
             
-            # Collect trajectory data
-            tl_states = {}
-            for tl_id, tl_data in tl_manager.get_traffic_lights().items():
-                state = tl_data['current_state']
-                tl_states[tl_id] = 'Red' if state in [TrafficLightState.Red, TrafficLightState.Yellow] else 'Green'
+            ego_latency = getattr(agent, 'current_latency', 0.0)
             
+            # Collect trajectory data
             # Store ego vehicle data
-            ego_data = {
+            ego_entry = {
                 'Timestamp': world.time,
-                'Velocity': speed,
+                'ID': ego_vehicle.id,
+                'Role': 'Leader',
                 'Position_X': ego_pos.x,
                 'Position_Y': ego_pos.y,
-                'Light State 1': tl_states.get(1, 'Unknown'),
-                'Light State 2': tl_states.get(2, 'Unknown'),
-                'Light State 3': tl_states.get(3, 'Unknown'),
-                'Light State 4': tl_states.get(4, 'Unknown'),
-                'Light State 5': tl_states.get(5, 'Unknown'),
-                'Light State 6': tl_states.get(6, 'Unknown')
+                'Velocity': speed,
+                'Latency': ego_latency,
             }
-            trajectory_data.append(ego_data)
+            trajectory_data.append(ego_entry)
             
             # Collect follower vehicle data
             for pm in traffic_manager.platoon_managers:
-                for vehicle_info in pm.behind_vehicles:
+                # Iterate through vehicles in order to check gaps
+                # behind_vehicles is ordered list? Yes.
+                if not pm.behind_vehicles:
+                    continue
+
+                prev_veh = pm.behind_vehicles[0]['following'] # This is leader for 1st follower
+                
+                for i, vehicle_info in enumerate(pm.behind_vehicles):
                     v_id = vehicle_info['id']
                     v = vehicle_info['vehicle']
+                    v_agent = vehicle_info['agent']
+                    
                     v_vel = v.get_velocity()
                     v_speed = math.sqrt(v_vel.x**2 + v_vel.y**2)
                     v_pos = v.get_location()
                     
-                    if v_id not in vehicle_data:
-                        vehicle_data[v_id] = []
+                    # Gap check
+                    if prev_veh:
+                        prev_pos = prev_veh.get_location()
+                        gap = prev_pos.distance(v_pos)
+                        if gap < 2.0:
+                            print(f"!!! CRITICAL WARNING: Gap between {prev_veh.id} and {v_id} is {gap:.2f}m (< 2.0m) !!!")
                     
-                    vehicle_data[v_id].append({
-                        'Time': world.time,
-                        'Velocity': v_speed,
+                    prev_veh = v # Update for next
+                    
+                    v_latency = getattr(v_agent, 'current_latency', 0.0)
+                    
+                    entry = {
+                        'Timestamp': world.time,
+                        'ID': v_id,
+                        'Role': 'Follower',
                         'Position_X': v_pos.x,
-                        'Position_Y': v_pos.y
-                    })
+                        'Position_Y': v_pos.y,
+                        'Velocity': v_speed,
+                        'Latency': v_latency
+                    }
+                    trajectory_data.append(entry)
             
-            print(f"Tick: {current_tick} | Frame Time: {world.time:.2f} | Ego Speed: {speed:.2f} m/s")
+            print(f"Tick: {current_tick} | Time: {world.time:.2f} | Payload: {len(trajectory_data)} rows")
             
             # Visualization Update
             all_traffic = []
@@ -223,89 +283,109 @@ def main():
     except KeyboardInterrupt:
         print("Simulation stopped by user.")
     finally:
-        print("\nGenerating trajectory plot...")
+        print("\nStopping Simulation...")
+        if cloud_controller:
+            cloud_controller.stop()
         
-        # Process data and create plot
-        if trajectory_data:
-            # Create DataFrame for ego vehicle
-            df_ego = pd.DataFrame(trajectory_data)
+        for c in mqtt_clients:
+            c.disconnect()
             
-            # Calculate cumulative distance for ego vehicle
-            df_ego['Time_diff'] = df_ego['Timestamp'].diff().fillna(0)
-            df_ego['Distance_step'] = df_ego['Velocity'] * df_ego['Time_diff']
-            df_ego['Distance_cumulative'] = df_ego['Distance_step'].cumsum()
-            
-            # Calculate cumulative distance for follower vehicles
-            vehicle_dfs = {}
-            for v_id, v_data in vehicle_data.items():
-                df_v = pd.DataFrame(v_data)
-                df_v['Time_diff'] = df_v['Time'].diff().fillna(0)
-                df_v['Distance_step'] = df_v['Velocity'] * df_v['Time_diff']
-                df_v['Distance_cumulative'] = df_v['Distance_step'].cumsum()
-                vehicle_dfs[v_id] = df_v
-            
-            # Define traffic light positions on straight road
-            traffic_lights = {
-                1: 200,    # Traffic light 1 at 200m
-                2: 400,    # Traffic light 2 at 400m
-                3: 600,    # Traffic light 3 at 600m
-                4: 900,    # Traffic light 4 at 900m
-                5: 1100,   # Traffic light 5 at 1100m
-                6: 1300,   # Traffic light 6 at 1300m
-            }
-            
-            # Create plot
-            fig = plt.figure(figsize=(14, 10))
-            
-            # Plot traffic light phases
-            time = df_ego['Timestamp'] - df_ego['Timestamp'].iloc[0]
-            tl_states = {
-                1: df_ego['Light State 1'],
-                2: df_ego['Light State 2'],
-                3: df_ego['Light State 3'],
-                4: df_ego['Light State 4'],
-                5: df_ego['Light State 5'],
-                6: df_ego['Light State 6'],
-            }
-            
-            for tl_id, position in traffic_lights.items():
-                states = tl_states[tl_id]
-                for i in range(len(states) - 1):
-                    start_time = time.iloc[i]
-                    end_time = time.iloc[i + 1]
-                    color = 'red' if states.iloc[i] == 'Red' else 'green'
-                    plt.plot([start_time, end_time], [position, position], 
-                            color=color, linewidth=3, alpha=0.6)
-            
-            # Plot ego vehicle trajectory
-            plt.plot(time, df_ego['Position_X'], 
-                    color='blue', label=f'{mode} Vehicle (Ego)', linewidth=2.5)
-            
-            # Plot follower vehicles
-            counter = 0
-            for v_id, df_v in sorted(vehicle_dfs.items()):
-                counter += 1
-                v_time = df_v['Time'] - df_v['Time'].iloc[0]
-                plt.plot(v_time, df_v['Position_X'], label=f'Vehicle {counter}', linewidth=2)
-            
-            # Formatting
-            plt.xlabel('Time (s)', fontsize=12)
-            plt.ylabel('Distance (m)', fontsize=12)
-            plt.xlim(0, max(135, time.iloc[-1] if len(time) > 0 else 135))
-            plt.legend(fontsize=10, loc='upper left')
-            plt.grid(True, alpha=0.3)
-            plt.title(f'{mode} Mode - Space-Time Diagram', fontsize=14)
-            plt.tight_layout()
-            
-            # Save plot
-            plot_filename = f'trajectory_{mode.lower()}_mode.png'
-            plt.savefig(plot_filename, dpi=150)
-            print(f"Trajectory plot saved to: {plot_filename}")
-            plt.close()
-        
         traffic_manager.cleanup()
         tl_manager.stop()
         visualizer.close()
+
+        print("\nSaving Data...")
+        if trajectory_data:
+            df = pd.DataFrame(trajectory_data)
+            
+            # Save Raw Data
+            csv_filename = f"platoon_data_{mode}_{'MQTT' if use_mqtt else 'LOCAL'}.csv"
+            df.to_csv(csv_filename, index=False)
+            print(f"Data saved to {csv_filename}")
+            
+            # Save Latency Data specifically if requested
+            if use_mqtt:
+                latency_filename = f"latency_data_{'MITIGATION' if mitigate_latency else 'NORMAL'}.csv"
+                df_latency = df[['Timestamp', 'ID', 'Latency']]
+                df_latency.to_csv(latency_filename, index=False)
+                print(f"Latency data saved to {latency_filename}")
+                
+            # Plotting Trajectory (Existing Logic adapted)
+            print("Generating trajectory plot...")
+            plt.figure(figsize=(14, 10))
+            
+            # Plot Ego
+            ego_df = df[df['ID'] == ego_vehicle.id]
+            if not ego_df.empty:
+                plt.plot(ego_df['Timestamp'], ego_df['Position_X'], label='Leader (Ego)', linewidth=2.5)
+                
+            # Plot Followers
+            followers = df[df['Role'] == 'Follower']['ID'].unique()
+            for fid in followers:
+                f_df = df[df['ID'] == fid]
+                plt.plot(f_df['Timestamp'], f_df['Position_X'], label=f'Follower {fid}', alpha=0.7)
+                
+            plot_title = f'Trajectory - {mode}'
+            plot_filename = f'trajectory_plot_{mode}.png'
+            
+            if use_mqtt:
+                if mitigate_latency:
+                    plot_title += " (Mitigated)"
+                    plot_filename = f'trajectory_plot_{mode}_latency_mitigation.png'
+                else:
+                    plot_title += " (Latency)"
+                    plot_filename = f'trajectory_plot_{mode}_latency.png'
+            
+            # Plot Traffic Lights
+            # Overlay traffic light phases
+            # Assuming fixed cycle: Initial -> (Red/Green) -> Toggle ...
+            colors = {TrafficLightState.Red: 'red', TrafficLightState.Green: 'green', TrafficLightState.Yellow: 'yellow'}
+            
+            for tl_id, config in traffic_light_config.items():
+                if config['location_index'] < len(waypoint_transforms):
+                    tl_pos = waypoint_transforms[config['location_index']].location.x
+                    
+                    # specific to this config structure
+                    cycle_time = config['green_time'] + config['red_time']
+                    current_t = 0
+                    state = config['initial_state']
+                    
+                    # Decide color intervals
+                    # To allow for arbitrary simulation length, we iterate up to world.time
+                    max_time = world.time
+                    t = 0
+                    while t < max_time:
+                        duration = config['green_time'] if state == TrafficLightState.Green else config['red_time']
+                        color = colors.get(state, 'gray')
+                        
+                        # Plot horizontal line segment for this phase
+                        if color == 'red':
+                            plt.hlines(y=tl_pos, xmin=t, xmax=min(t+duration, max_time), colors=color, linestyles='solid', linewidth=2, alpha=0.5)
+                        
+                        # Update for next segment
+                        t += duration
+                        state = TrafficLightState.Red if state == TrafficLightState.Green else TrafficLightState.Green
+            
+            plt.xlabel('Time (s)')
+            plt.ylabel('Position X (m)')
+            plt.title(plot_title)
+            plt.legend()
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(plot_filename)
+            print(f"Plot saved to {plot_filename}")
+            
+            # Plot Latency if MQTT
+            if use_mqtt:
+                plt.figure(figsize=(10, 6))
+                if not ego_df.empty:
+                    plt.plot(ego_df['Timestamp'], ego_df['Latency']*1000, label='Leader Latency') # ms
+                plt.xlabel('Time (s)')
+                plt.ylabel('Latency (ms)')
+                plt.title('Control Loop Latency')
+                plt.grid(True)
+                plt.savefig('latency_plot.png')
+                print("Latency plot saved.")
 
 if __name__ == '__main__':
     main()
