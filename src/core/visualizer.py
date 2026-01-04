@@ -2,6 +2,7 @@ import pygame
 import numpy as np
 import math
 from .traffic_light import TrafficLightState
+from .primitives import Transform as T, Location as L, Vector3D as V
 
 # Constants
 SCREEN_WIDTH = 1200
@@ -24,8 +25,11 @@ BACKGROUND_COLOR = (30, 30, 30) # Dark Gray for 2D Map
 ROAD_COLOR = (50, 50, 50)    # Gray
 MARKING_COLOR = (255, 255, 255)
 EGO_COLOR = (0, 100, 255)
-FOLLOWER_COLOR = (255, 50, 50)
-TL_POLE_COLOR = (100, 100, 100)
+FOLLOWER_COLOR = (200, 50, 50) # Slightly darker red
+TL_POLE_COLOR = (50, 50, 50)
+TIRE_COLOR = (20, 20, 20)
+CABIN_COLOR = (0, 70, 180) # Darker blue for ego cabin
+CABIN_FOLLOWER_COLOR = (180, 40, 40) # Darker red for follower cabin
 
 class Camera3D:
     """Chase camera for 3D view - optimized for straight road."""
@@ -162,6 +166,19 @@ class Visualizer:
         # 2D view parameters - fixed wide view or scrolling
         self.view_window = 250.0  # Show 250m window to see platoon easily
         
+        # Interactive Control
+        self.tracked_vehicle_id = None # None means Ego
+        self.buttons = {} 
+        self._init_buttons()
+        self.available_leaders = []
+        
+    def _init_buttons(self):
+        """Initialize UI buttons."""
+        y = TOP_VIEW_HEIGHT + 10
+        w, h = 100, 30
+        self.buttons['next'] = pygame.Rect(SCREEN_WIDTH - 120, y, w, h)
+        self.buttons['ego'] = pygame.Rect(SCREEN_WIDTH - 230, y, w, h)
+        
     def _build_road_mesh(self):
         """Build road mesh for 3D rendering - straight road."""
         road_quads = []
@@ -190,7 +207,7 @@ class Visualizer:
         cam_pos = self.camera.position
         centers = np.mean(self.road_geometry, axis=1)
         dists = np.linalg.norm(centers - cam_pos, axis=1)
-        visible_indices = np.where(dists < 200)[0]
+        visible_indices = np.where(dists < 300)[0] # Visible dist
         if len(visible_indices) == 0: return
         visible_quads = self.road_geometry[visible_indices]
         M = len(visible_quads)
@@ -210,7 +227,8 @@ class Visualizer:
 
     def _draw_center_line_3d(self, surface):
         cam_x = self.camera.position[0]
-        for x in range(int(cam_x - 100), int(cam_x + 150), 10):
+        # Draw dashed line
+        for x in range(int(cam_x - 100), int(cam_x + 300), 10):
             if x < 0 or x > 1500: continue
             start = np.array([[x, 0, 0.01]])
             end = np.array([[x + 5, 0, 0.01]])
@@ -221,26 +239,179 @@ class Visualizer:
                                (int(start_proj[0, 0]), int(start_proj[0, 1])),
                                (int(end_proj[0, 0]), int(end_proj[0, 1])), 2)
 
-    def draw_box_3d(self, surface, transform, extent, color):
-        l, w, h = extent.x, extent.y, extent.z
+    def _project_poly(self, poly_3d):
+        projected, mask = self.camera.project_points(poly_3d)
+        if projected is None or not np.all(mask):
+            return None
+        return projected
+
+    def draw_box_mesh(self, surface, transform, extent, color, outline_color=(0,0,0)):
+        """Generic box drawer."""
+        l, w, h = extent[0], extent[1], extent[2]
         corners = np.array([
-            [l, w, -h], [l, -w, -h], [-l, -w, -h], [-l, w, -h],
-            [l, w, h], [l, -w, h], [-l, -w, h], [-l, w, h]
+            [l, w, -h], [l, -w, -h], [-l, -w, -h], [-l, w, -h], # Bottom
+            [l, w, h], [l, -w, h], [-l, -w, h], [-l, w, h]      # Top
         ])
         yaw_rad = math.radians(transform.rotation.yaw)
         cy, sy = math.cos(yaw_rad), math.sin(yaw_rad)
         R = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
         rotated_corners = corners @ R.T
         world_corners = rotated_corners + np.array([transform.location.x, transform.location.y, transform.location.z])
-        projected, mask = self.camera.project_points(world_corners)
-        if projected is None or not np.all(mask): return
-        faces = [[0,1,2,3], [4,5,6,7], [0,1,5,4], [1,2,6,5], [2,3,7,6], [3,0,4,7]]
-        for face in faces:
+        
+        projected = self._project_poly(world_corners)
+        if projected is None: return
+
+        # Draw faces (Painter's algo simple order: Bottom, Top, Sides... ideally sort by normal, but car is convex)
+        faces = [
+            [0,1,2,3], # Bottom
+            [4,5,6,7], # Top
+            [0,1,5,4], # Front
+            [1,2,6,5], # Right
+            [2,3,7,6], # Back
+            [3,0,4,7]  # Left
+        ]
+        
+        # Sort faces by depth
+        # center of face
+        face_depths = []
+        cam_pos = self.camera.position
+        for i, face_idxs in enumerate(faces):
+            center = np.mean(world_corners[face_idxs], axis=0)
+            dist = np.linalg.norm(center - cam_pos)
+            face_depths.append((dist, i))
+        
+        face_depths.sort(key=lambda x: x[0], reverse=True)
+        
+        for dist, idx in face_depths:
+            face = faces[idx]
             poly = projected[face]
             pygame.draw.polygon(surface, color, poly)
-            pygame.draw.polygon(surface, (0,0,0), poly, 1)
+            if outline_color:
+                pygame.draw.polygon(surface, outline_color, poly, 1)
 
+    def draw_vehicle_realistic(self, surface, vehicle, is_ego=False):
+        """Draw a more detailed vehicle model with wheels and cabin."""
+        transform = vehicle.get_transform()
+        loc = transform.location
+        
+        # Dimensions
+        length = 4.6
+        width = 1.8
+        height_chassis = 0.6
+        height_cabin = 0.5
+        
+        chassis_color = EGO_COLOR if is_ego else FOLLOWER_COLOR
+        cabin_color = CABIN_COLOR if is_ego else CABIN_FOLLOWER_COLOR
+        
+        # 1. Wheels (4 boxes)
+        wheel_radius = 0.35
+        wheel_width = 0.3
+        wheel_offsets = [
+            (1.4, 0.9), (1.4, -0.9), (-1.4, 0.9), (-1.4, -0.9)
+        ]
+        
+        # Helper to rotate offsets
+        yaw_rad = math.radians(transform.rotation.yaw)
+        cy, sy = math.cos(yaw_rad), math.sin(yaw_rad)
+        
+        def get_world_pos(lx, ly, lz):
+            rx = lx * cy - ly * sy
+            ry = lx * sy + ly * cy
+            return L(loc.x + rx, loc.y + ry, loc.z + lz)
 
+        # Draw Wheels
+        for wx, wy in wheel_offsets:
+            w_pos = get_world_pos(wx, wy, wheel_radius)
+            # Wheel is a box for now, maybe rotated? 
+            # Simple box
+            w_trans = T(w_pos, transform.rotation)
+            self.draw_box_mesh(surface, w_trans, (wheel_radius, wheel_width/2, wheel_radius), TIRE_COLOR, None)
+
+        # 2. Chassis
+        c_pos = get_world_pos(0, 0, wheel_radius + height_chassis/2)
+        c_trans = T(c_pos, transform.rotation)
+        self.draw_box_mesh(surface, c_trans, (length/2, width/2, height_chassis/2), chassis_color, (0,0,0))
+        
+        # 3. Cabin (Upper part)
+        cab_pos = get_world_pos(-0.3, 0, wheel_radius + height_chassis + height_cabin/2)
+        cab_trans = T(cab_pos, transform.rotation)
+        self.draw_box_mesh(surface, cab_trans, (length/3, width/2.2, height_cabin/2), cabin_color, (0,0,0))
+        
+        # 4. Headlights (Yellow quads on front face of Chassis)
+        # Simplified: Just small boxes
+        hl_pos_l = get_world_pos(length/2 + 0.05, 0.6, wheel_radius + height_chassis/2)
+        hl_pos_r = get_world_pos(length/2 + 0.05, -0.6, wheel_radius + height_chassis/2)
+        self.draw_box_mesh(surface, T(hl_pos_l, transform.rotation), (0.05, 0.2, 0.1), (255, 255, 200), None)
+        self.draw_box_mesh(surface, T(hl_pos_r, transform.rotation), (0.05, 0.2, 0.1), (255, 255, 200), None)
+        
+        # Taillights (Red)
+        tl_pos_l = get_world_pos(-(length/2 + 0.05), 0.6, wheel_radius + height_chassis/2)
+        tl_pos_r = get_world_pos(-(length/2 + 0.05), -0.6, wheel_radius + height_chassis/2)
+        self.draw_box_mesh(surface, T(tl_pos_l, transform.rotation), (0.05, 0.2, 0.1), (200, 0, 0), None)
+        self.draw_box_mesh(surface, T(tl_pos_r, transform.rotation), (0.05, 0.2, 0.1), (200, 0, 0), None)
+
+    def draw_traffic_light_realistic(self, surface, tl_data, tl_id):
+        """Draw realistic traffic light with pole and lamps."""
+        actor = tl_data['actor']
+        state = tl_data['current_state']
+        transform = actor.get_transform()
+        
+        loc = transform.location
+        
+        # 1. Pole (Tall thin box)
+        pole_height = 6.0
+        pole_pos = L(loc.x, loc.y, pole_height/2)
+        pole_trans = T(pole_pos, transform.rotation)
+        self.draw_box_mesh(surface, pole_trans, (0.2, 0.2, pole_height/2), TL_POLE_COLOR, None)
+        
+        # 3. Housing (Vertical Box) mounting the lights
+        housing_h = 1.0
+        housing_w = 0.4
+        housing_d = 0.4
+        housing_z = pole_height - 1.5
+        housing_pos = L(loc.x, loc.y, housing_z)
+        housing_trans = T(housing_pos, transform.rotation)
+        self.draw_box_mesh(surface, housing_trans, (housing_d/2, housing_w/2, housing_h/2), (30, 30, 30))
+        
+        # 4. Lamps (Circles/Quads on face)
+        lamp_colors = {
+            'Red': (50, 0, 0),
+            'Yellow': (50, 50, 0),
+            'Green': (0, 50, 0)
+        }
+        
+        active_colors = {
+            'Red': (255, 0, 0),
+            'Yellow': (255, 255, 0),
+            'Green': (0, 255, 0)
+        }
+        
+        current_color_name = 'Red'
+        if state == TrafficLightState.Green: current_color_name = 'Green'
+        elif state == TrafficLightState.Yellow: current_color_name = 'Yellow'
+        
+        # Draw 3 lamps
+        lamps = [('Red', 0.25), ('Yellow', 0.0), ('Green', -0.25)]
+        
+        yaw_rad = math.radians(transform.rotation.yaw)
+        cy, sy = math.cos(yaw_rad), math.sin(yaw_rad)
+        
+        for name, z_off in lamps:
+            col = active_colors[name] if name == current_color_name else lamp_colors[name]
+            # Local offset
+            lx = -housing_d/2 - 0.05
+            ly = 0
+            lz = z_off
+            
+            # Rotate
+            rx = lx * cy - ly * sy
+            ry = lx * sy + ly * cy
+            
+            l_pos = L(housing_pos.x + rx, housing_pos.y + ry, housing_pos.z + lz)
+            l_trans = T(l_pos, transform.rotation)
+            
+            # Draw small flat box as light
+            self.draw_box_mesh(surface, l_trans, (0.02, 0.12, 0.12), col, None)
 
     def draw_2d_view(self, surface, ego_vehicle, traffic_vehicles, traffic_lights, leader_ids=None):
         """Draw 2D view at top, centered on platoon."""
@@ -319,52 +490,106 @@ class Visualizer:
             draw_veh(v_data['vehicle'], color, label)
         draw_veh(ego_vehicle, EGO_COLOR, "L")
 
+    def _update_controls(self, ego_id, leader_ids):
+        """Update buttons and input."""
+        # Setup available targets
+        self.available_leaders = [ego_id]
+        if leader_ids:
+            self.available_leaders.extend([lid for lid in leader_ids if lid != ego_id])
+            
     def update(self, ego_vehicle, traffic_vehicles, traffic_lights, tick_info, leader_ids=None):
         if not self.running: return
+        
+        # Helpers
+        ego_id = ego_vehicle.id
+        self._update_controls(ego_id, leader_ids)
+        
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
                 pygame.quit(); return
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE or event.key == pygame.K_n:
+                    # Switch leader
+                    curr_idx = -1
+                    if self.tracked_vehicle_id in self.available_leaders:
+                        curr_idx = self.available_leaders.index(self.tracked_vehicle_id)
+                    
+                    next_idx = (curr_idx + 1) % len(self.available_leaders)
+                    self.tracked_vehicle_id = self.available_leaders[next_idx]
+                elif event.key == pygame.K_e:
+                    self.tracked_vehicle_id = ego_id
+            
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                mx, my = pygame.mouse.get_pos()
+                if self.buttons['next'].collidepoint(mx, my):
+                    # Next
+                    curr_idx = -1
+                    if self.tracked_vehicle_id in self.available_leaders:
+                        curr_idx = self.available_leaders.index(self.tracked_vehicle_id)
+                    next_idx = (curr_idx + 1) % len(self.available_leaders)
+                    self.tracked_vehicle_id = self.available_leaders[next_idx]
+                elif self.buttons['ego'].collidepoint(mx, my):
+                    # Ego
+                    self.tracked_vehicle_id = ego_id
 
+        # Determine target vehicle
+        target_v = ego_vehicle
+        if self.tracked_vehicle_id and self.tracked_vehicle_id != ego_id:
+            # Find in followers
+            found = False
+            for v_data in traffic_vehicles:
+                if v_data['vehicle'].id == self.tracked_vehicle_id:
+                    target_v = v_data['vehicle']
+                    found = True
+                    break
+            if not found:
+                self.tracked_vehicle_id = ego_id # Fallback
+                target_v = ego_vehicle
+                
         # Update Camera
-        self.camera.update_follow(ego_vehicle.get_transform())
+        self.camera.update_follow(target_v.get_transform())
         
         # 3D Render
         self.surface_3d.fill(SKY_COLOR)
+        # Horizon / Sky logic? Just fill sky, then draw ground rect
         pygame.draw.rect(self.surface_3d, GROUND_COLOR, (0, BOTTOM_VIEW_HEIGHT//2, SCREEN_WIDTH, BOTTOM_VIEW_HEIGHT//2))
         self.draw_road_3d(self.surface_3d)
         
         # Draw Objects 3D
-        # (Same loop as before for TLs and Vehicles)
-        # TLs
+        # Sort objects by distance to camera to handle simple occlusion
+        cam_pos = self.camera.position
+        
+        render_queue = []
+        
+        # Traffic Lights
         for tl_id, tl_data in traffic_lights.items():
             tl_actor = tl_data.get('actor')
-            state = tl_data.get('current_state')
             if tl_actor:
-                c = (100, 100, 100)
-                if state == TrafficLightState.Red: c = (255, 0, 0)
-                elif state == TrafficLightState.Green: c = (0, 255, 0)
-                elif state == TrafficLightState.Yellow: c = (255, 255, 0)
-                t = tl_actor.get_transform()
-                from .primitives import Transform as T, Location as L, Vector3D as V
-                lt = T(L(t.location.x, t.location.y, t.location.z + 5.0), t.rotation)
-                pt = T(L(t.location.x, t.location.y, t.location.z + 2.5), t.rotation)
-                self.draw_box_3d(self.surface_3d, pt, V(0.2, 0.2, 2.5), TL_POLE_COLOR)
-                self.draw_box_3d(self.surface_3d, lt, V(0.5, 0.5, 0.8), c)
-        
+                loc = tl_actor.get_location()
+                dist = np.linalg.norm(np.array([loc.x, loc.y, loc.z]) - cam_pos)
+                if dist < 200: # Cull far
+                    render_queue.append((dist, 'TL', tl_data, tl_id))
+                    
         # Vehicles
-        from .primitives import Vector3D
-        self.draw_box_3d(self.surface_3d, ego_vehicle.get_transform(), Vector3D(2.3, 1.0, 0.8), EGO_COLOR)
+        dist = np.linalg.norm(np.array([ego_vehicle.get_location().x, ego_vehicle.get_location().y, 0]) - cam_pos)
+        render_queue.append((dist, 'VEH', ego_vehicle, True)) # is_ego
+        
         for v_data in traffic_vehicles:
             v_id = v_data.get('id', v_data['vehicle'].id)
             v = v_data['vehicle']
-            
-            color = FOLLOWER_COLOR
-            if leader_ids and v_id in leader_ids:
-                color = EGO_COLOR
+            dist = np.linalg.norm(np.array([v.get_location().x, v.get_location().y, 0]) - cam_pos)
+            if dist < 200:
+                render_queue.append((dist, 'VEH', v, False))
                 
-            dims = v.bounding_box.extent if hasattr(v, 'bounding_box') else Vector3D(2.3, 1.0, 0.8)
-            self.draw_box_3d(self.surface_3d, v.get_transform(), dims, color)
+        # Sort back to front (larger distance first) for Painter's Algorithm
+        render_queue.sort(key=lambda x: x[0], reverse=True)
+        
+        for item in render_queue:
+            if item[1] == 'TL':
+                self.draw_traffic_light_realistic(self.surface_3d, item[2], item[3])
+            elif item[1] == 'VEH':
+                self.draw_vehicle_realistic(self.surface_3d, item[2], item[3])
 
         # 2D Render
         self.draw_2d_view(self.surface_2d, ego_vehicle, traffic_vehicles, traffic_lights, leader_ids)
@@ -376,8 +601,35 @@ class Visualizer:
         # Separator
         pygame.draw.line(self.screen, (255, 255, 255), (0, TOP_VIEW_HEIGHT), (SCREEN_WIDTH, TOP_VIEW_HEIGHT), 2)
         
-        # HUD
-        info = [f"Tick: {tick_info['tick']}", f"Speed: {tick_info['speed']*3.6:.1f} km/h"]
+        # HUD Controls
+        # Draw Buttons
+        mouse_pos = pygame.mouse.get_pos()
+        
+        # Ego Button (Blue)
+        col = (0, 100, 200) if self.buttons['ego'].collidepoint(mouse_pos) else (0, 80, 160)
+        pygame.draw.rect(self.screen, col, self.buttons['ego'])
+        pygame.draw.rect(self.screen, (255, 255, 255), self.buttons['ego'], 2)
+        txt = self.font.render("EGO View", True, (255, 255, 255))
+        self.screen.blit(txt, (self.buttons['ego'].x + 10, self.buttons['ego'].y + 5))
+        
+        # Next Button (Green)
+        col = (0, 200, 100) if self.buttons['next'].collidepoint(mouse_pos) else (0, 160, 80)
+        pygame.draw.rect(self.screen, col, self.buttons['next'])
+        pygame.draw.rect(self.screen, (255, 255, 255), self.buttons['next'], 2)
+        txt = self.font.render("Next Leader", True, (255, 255, 255))
+        self.screen.blit(txt, (self.buttons['next'].x + 10, self.buttons['next'].y + 5))
+        
+        # HUD Info
+        tracked_name = "Ego (Leader)"
+        if self.tracked_vehicle_id and self.tracked_vehicle_id != ego_id:
+             tracked_name = f"Vehicle {self.tracked_vehicle_id}"
+             
+        info = [
+            f"Tick: {tick_info['tick']}", 
+            f"Speed: {tick_info['speed']*3.6:.1f} km/h",
+            f"Camera Tracking: {tracked_name}",
+            f"(Press N or Click Button to Switch)"
+        ]
         for i, line in enumerate(info):
             t = self.large_font.render(line, True, (255, 255, 255))
             self.screen.blit(t, (10, TOP_VIEW_HEIGHT + 10 + i * 25))
